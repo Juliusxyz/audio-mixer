@@ -14,90 +14,36 @@ export default function App() {
   const [appCategories, setAppCategoriesState] = useState<Record<number, StreamId>>({})
 
   useEffect(() => {
-    // Auto-update check nur in Production
-    if (import.meta.env.PROD) {
-      checkForUpdates();
-    }
-    
-    // Lade initial die Daten
-    loadDevices();
-    loadApps();
-    loadAppCategories();
-    loadRoutes();
-    
-    // Auto-refresh Apps alle 4 Sekunden
-    const interval = setInterval(() => {
-      loadApps();
-      loadAppCategories();
-    }, 4000);
-    
-    return () => clearInterval(interval);
+    // Initial data
+  getDevices().then(setDevices).catch(console.error)
+  getRoutes().then(setRoutesState).catch(console.error)
+  listAudioApps().then(setApps).catch(console.error)
+  getAppCategories().then(setAppCategoriesState).catch(console.error)
   }, [])
 
-  const checkForUpdates = async () => {
-    try {
-      const { check } = await import('@tauri-apps/plugin-updater');
-      const update = await check();
-      
-      if (update?.available) {
-        setUpdateAvailable(true);
-      }
-    } catch (error) {
-      console.error('Update check failed:', error);
-    }
-  };
+  useEffect(() => {
+    // Lightweight polling to catch newly created audio sessions (e.g., apps opened after launch)
+    const id = setInterval(() => {
+      listAudioApps().then(setApps).catch(() => {})
+    }, 4000)
+    return () => clearInterval(id)
+  }, [])
 
-  const installUpdate = async () => {
-    try {
-      setUpdateInProgress(true);
-      const { check } = await import('@tauri-apps/plugin-updater');
-      const update = await check();
-      
-      if (update?.available) {
-        await update.downloadAndInstall();
-        // App startet automatisch neu nach Installation
-      }
-    } catch (error) {
-      console.error('Update failed:', error);
-      setUpdateInProgress(false);
+  useEffect(() => {
+    // Auto-update check on startup (disabled in dev to avoid permission issues)
+    if (import.meta.env.PROD) {
+      (async () => {
+        try {
+          const update = await checkUpdate()
+          if (update) {
+            setUpdateInfo({ version: update.version, notes: update.body, available: true })
+          }
+        } catch (e) {
+          console.warn('Update check failed', e)
+        }
+      })()
     }
-  };
-
-  const loadDevices = async () => {
-    try {
-      const devices = await getDevices();
-      setDevices(devices);
-    } catch (error) {
-      console.error('Failed to load devices:', error);
-    }
-  };
-
-  const loadRoutes = async () => {
-    try {
-      const routes = await getRoutes();
-      setRoutesState(routes);
-    } catch (error) {
-      console.error('Failed to load routes:', error);
-    }
-  };
-
-  const loadApps = async () => {
-    try {
-      const apps = await listAudioApps();
-      setApps(apps);
-    } catch (error) {
-      console.error('Failed to load apps:', error);
-    }
-  };
-
-  const loadAppCategories = async () => {
-    try {
-      const categories = await getAppCategories();
-      setAppCategoriesState(categories);
-    } catch (error) {
-      console.error('Failed to load app categories:', error);
-    }
-  };
+  }, [])
 
   const outputDevices = useMemo(() => devices.filter((d: DeviceInfo) => d.kind === 'output'), [devices])
 
