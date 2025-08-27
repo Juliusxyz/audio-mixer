@@ -24,6 +24,7 @@ export default function App() {
   const [routes, setRoutesState] = useState<Record<StreamId, string | null>>({ game: null, voice: null, music: null })
   const [volumes, setVolumes] = useState<Record<StreamId, number>>({ game: 0.8, voice: 0.8, music: 0.8 })
   const [updateInfo, setUpdateInfo] = useState<{version: string, notes?: string, available: boolean} | null>(null)
+  const [isUpdating, setIsUpdating] = useState(false)
   const [apps, setApps] = useState<AppSession[]>([])
   const [appCategories, setAppCategoriesState] = useState<Record<number, StreamId | string>>({})
   const [isLoading, setIsLoading] = useState(true)
@@ -60,6 +61,13 @@ export default function App() {
     // Auto-update check nur in Production
     if (import.meta.env.PROD && isTauri) {
       checkForUpdates();
+      
+      // Check for updates every hour
+      const updateInterval = setInterval(() => {
+        checkForUpdates();
+      }, 60 * 60 * 1000); // 1 hour
+      
+      return () => clearInterval(updateInterval);
     }
     
     // Lade initial die Daten
@@ -89,20 +97,34 @@ export default function App() {
   };
 
   const checkForUpdates = async () => {
+    if (!isTauri) return;
+    
     try {
+      console.log('Checking for updates...');
       const { check } = await import('@tauri-apps/plugin-updater');
       const update = await check();
       
       if (update?.available) {
-        setUpdateInfo({ version: update.version, notes: update.body, available: true });
+        console.log('Update available:', update.version);
+        setUpdateInfo({ 
+          version: update.version, 
+          notes: update.body || 'Bug fixes and improvements', 
+          available: true 
+        });
+      } else {
+        console.log('No updates available');
+        // Clear any existing update info if no update is available
+        setUpdateInfo(null);
       }
     } catch (error) {
       console.error('Update check failed:', error);
+      // Don't show error to user for automatic checks, only log it
     }
   };
 
   const installUpdate = async () => {
     try {
+      setIsUpdating(true);
       const { check } = await import('@tauri-apps/plugin-updater');
       const update = await check();
       
@@ -112,6 +134,9 @@ export default function App() {
       }
     } catch (error) {
       console.error('Update failed:', error);
+      setIsUpdating(false);
+      // Show error to user
+      alert('Update failed. Please try again later.');
     }
   };
 
@@ -450,6 +475,22 @@ export default function App() {
               </svg>
               Refresh
             </button>
+            
+            {isTauri && (
+              <button 
+                onClick={checkForUpdates}
+                className={`btn btn-secondary text-sm relative ${updateInfo?.available ? 'btn-accent' : ''}`}
+                disabled={isUpdating}
+              >
+                {updateInfo?.available && (
+                  <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+                )}
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {updateInfo?.available ? 'Update Available!' : 'Check Updates'}
+              </button>
+            )}
           </div>
         </header>
 
@@ -724,6 +765,7 @@ export default function App() {
           notes={updateInfo.notes} 
           onClose={() => setUpdateInfo(null)} 
           onInstall={installUpdate}
+          isUpdating={isUpdating}
         />
       )}
     </div>
@@ -804,31 +846,87 @@ function StreamCard({ stream, devices, route, volume, onRoute, onVolume }: {
   )
 }
 
-function UpdateModal({ version, notes, onClose, onInstall }: { 
+function UpdateModal({ version, notes, onClose, onInstall, isUpdating }: { 
   version: string
   notes?: string
   onClose: () => void
   onInstall: () => void
+  isUpdating: boolean
 }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="panel p-6 max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-4">Update Available</h3>
-        <p className="text-gray-300 mb-2">Version {version} is available!</p>
-        {notes && (
-          <div className="mb-4">
-            <h4 className="text-sm font-medium text-gray-300 mb-2">Release Notes:</h4>
-            <p className="text-sm text-gray-400 bg-gray-800/50 rounded p-2">{notes}</p>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
+            {isUpdating ? (
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+            ) : (
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+            )}
           </div>
-        )}
-        <div className="flex gap-3">
-          <button onClick={onInstall} className="btn btn-accent flex-1">
-            Install Update
-          </button>
-          <button onClick={onClose} className="btn btn-secondary">
-            Later
-          </button>
+          <h3 className="text-lg font-semibold">
+            {isUpdating ? 'Installing Update...' : 'Update Available'}
+          </h3>
         </div>
+        
+        {isUpdating ? (
+          <div className="space-y-3">
+            <p className="text-gray-300">Downloading and installing Audio Mixer v{version}...</p>
+            <div className="w-full bg-gray-700 rounded-full h-2">
+              <div className="bg-blue-500 h-2 rounded-full animate-pulse" style={{width: '100%'}}></div>
+            </div>
+            <p className="text-sm text-gray-400">The app will restart automatically when the update is complete.</p>
+          </div>
+        ) : (
+          <>
+            <div className="mb-4">
+              <p className="text-gray-300 mb-2">
+                <span className="text-blue-400 font-medium">Audio Mixer v{version}</span> is now available!
+              </p>
+              <p className="text-sm text-gray-400">
+                You're currently running version {/* Add current version here if needed */}
+              </p>
+            </div>
+            
+            {notes && (
+              <div className="mb-4">
+                <h4 className="text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  What's New:
+                </h4>
+                <div className="text-sm text-gray-400 bg-gray-800/50 rounded-lg p-3 max-h-32 overflow-y-auto">
+                  {notes.split('\n').map((line, index) => (
+                    <p key={index} className="mb-1 last:mb-0">{line}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            <div className="flex gap-3">
+              <button 
+                onClick={onInstall} 
+                className="btn btn-accent flex-1 flex items-center justify-center gap-2"
+                disabled={isUpdating}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Install Now
+              </button>
+              <button 
+                onClick={onClose} 
+                className="btn btn-secondary"
+                disabled={isUpdating}
+              >
+                Later
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
