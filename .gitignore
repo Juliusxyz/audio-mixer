@@ -9,6 +9,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-store/
 
+# Tauri Signing Keys (NEVER commit these!)
+audio-mixer.key*
+*.key
+*.key.pub
+
 # Tauri
 src-tauri/target/
 **/*.pdb
