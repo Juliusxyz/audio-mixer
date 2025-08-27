@@ -54,7 +54,31 @@ export default function App() {
   const [newCategoryName, setNewCategoryName] = useState('')
 
   // Check if we're running in Tauri
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__
+  // More reliable Tauri detection
+  const [isTauri, setIsTauri] = useState(false)
+  
+  useEffect(() => {
+    // Check for Tauri in multiple ways
+    const checkTauri = async () => {
+      try {
+        // Try to import Tauri API
+        await import('@tauri-apps/api/app')
+        console.log('Tauri detected via API import')
+        setIsTauri(true)
+      } catch (error) {
+        // Fallback to window check
+        const hasTauri = typeof window !== 'undefined' && (window as any).__TAURI__
+        console.log('Tauri detection fallback:', hasTauri)
+        setIsTauri(hasTauri)
+      }
+    }
+    checkTauri()
+  }, [])
+  
+  // Debug: Check Tauri detection
+  useEffect(() => {
+    console.log('isTauri:', isTauri, 'window.__TAURI__:', typeof window !== 'undefined' ? (window as any).__TAURI__ : 'undefined')
+  }, [isTauri])
 
   // Global drag and drop handling to prevent default browser behavior
   useEffect(() => {
@@ -81,8 +105,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    // Auto-update check nur in Production
-    if (import.meta.env.PROD && isTauri) {
+    // Auto-update check (temporarily enabled for testing)
+    if (isTauri) {
       checkForUpdates();
       
       // Check for updates every hour
@@ -120,12 +144,19 @@ export default function App() {
   };
 
   const checkForUpdates = async () => {
-    if (!isTauri) return;
+    console.log('checkForUpdates called, isTauri:', isTauri);
+    if (!isTauri) {
+      console.log('Not in Tauri mode, showing alert');
+      alert('Update check only works in Tauri desktop app');
+      return;
+    }
     
     try {
       console.log('Checking for updates...');
       const { check } = await import('@tauri-apps/plugin-updater');
+      console.log('Updater plugin imported successfully');
       const update = await check();
+      console.log('Update check result:', update);
       
       if (update?.available) {
         console.log('Update available:', update.version);
@@ -138,10 +169,12 @@ export default function App() {
         console.log('No updates available');
         // Clear any existing update info if no update is available
         setUpdateInfo(null);
+        // Show a temporary message to user
+        alert('No updates available. You have the latest version!');
       }
     } catch (error) {
       console.error('Update check failed:', error);
-      // Don't show error to user for automatic checks, only log it
+      alert('Update check failed: ' + error);
     }
   };
 
@@ -515,7 +548,7 @@ export default function App() {
               Refresh
             </button>
             
-            {isTauri && (
+            {(isTauri || true) && (
               <button 
                 onClick={checkForUpdates}
                 className={`btn btn-secondary text-sm relative ${updateInfo?.available ? 'btn-accent' : ''}`}
@@ -527,7 +560,7 @@ export default function App() {
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                {updateInfo?.available ? 'Update Available!' : 'Check Updates'}
+                {updateInfo?.available ? 'Update Available!' : `Check Updates (${isTauri ? 'Tauri' : 'Browser'})`}
               </button>
             )}
           </div>

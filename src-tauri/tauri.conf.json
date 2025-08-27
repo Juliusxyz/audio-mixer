@@ -1,6 +1,6 @@
 {
   "productName": "Audio Mixer",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "identifier": "com.juliusxyz.audio-mixer",
   "build": {
     "beforeDevCommand": "vite",
@@ -24,6 +24,9 @@
     "longDescription": "A modern audio mixer for Windows with per-app routing and volume control"
   },
   "app": {
+    "security": {
+      "capabilities": ["updater-capability"]
+    },
     "windows": [
       {
         "title": "Audio Mixer",

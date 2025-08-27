@@ -1,1 +1,1 @@
-{}
+{"updater-capability":{"identifier":"updater-capability","description":"Capability for the updater plugin","local":true,"windows":["main"],"permissions":["updater:allow-check","updater:allow-download-and-install","updater:default"]}}
