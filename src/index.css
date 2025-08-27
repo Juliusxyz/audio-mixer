@@ -6,29 +6,322 @@
   color-scheme: dark;
 }
 
-/* Simple glass panel */
+/* Disable text selection for native app feel */
+* {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+/* Allow text selection only for input fields */
+input, textarea {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+/* Disable text cursor on non-input elements */
+body {
+  cursor: default;
+}
+
+/* Draggable elements */
+[draggable="true"] {
+  cursor: grab;
+}
+
+[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* Smooth scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3A3A3A #1A1A1A;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #1A1A1A;
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #3A3A3A;
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #4A4A4A;
+}
+
+/* Glass panel with modern dark design */
 .panel {
-  @apply bg-slate-800/60 backdrop-blur rounded-xl border border-slate-700/60 shadow-lg;
+  background: linear-gradient(135deg, 
+    rgba(42, 42, 42, 0.8) 0%, 
+    rgba(26, 26, 26, 0.9) 100%);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  transition: all 0.3s ease;
 }
 
+.panel:hover {
+  transform: translateY(-2px);
+  box-shadow: 
+    0 12px 40px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 0 20px rgba(59, 130, 246, 0.1);
+}
+
+/* Modern button design */
 .btn {
-  @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 active:bg-slate-500 transition-colors;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  background: linear-gradient(135deg, #3A3A3A 0%, #2A2A2A 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #E5E5E5;
+  position: relative;
+  overflow: hidden;
 }
 
+.btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  transition: left 0.5s ease;
+}
+
+.btn:hover::before {
+  left: 100%;
+}
+
+.btn:hover {
+  background: linear-gradient(135deg, #4A4A4A 0%, #3A3A3A 100%);
+  border-color: rgba(59, 130, 246, 0.3);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Accent button for primary actions */
+.btn-accent {
+  background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%);
+  border-color: rgba(59, 130, 246, 0.3);
+  color: white;
+}
+
+.btn-accent:hover {
+  background: linear-gradient(135deg, #60A5FA 0%, #3B82F6 100%);
+  box-shadow: 0 4px 20px rgba(59, 130, 246, 0.4);
+}
+
+/* Modern slider design with improved visual feedback */
 .slider {
   -webkit-appearance: none;
+  appearance: none;
   width: 100%;
-  height: 6px;
-  border-radius: 3px;
-  background: linear-gradient(90deg, #10B981, #34D399);
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #2A2A2A, #3A3A3A);
   outline: none;
+  position: relative;
+  transition: all 0.2s ease;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
 }
+
+.slider:hover {
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.3);
+  background: linear-gradient(90deg, #3A3A3A, #4A4A4A);
+}
+
+.slider:active {
+  cursor: grabbing;
+}
+
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 9999px;
-  background: white;
-  border: 2px solid #10B981;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #60A5FA 0%, #3B82F6 100%);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  cursor: grab;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+}
+
+.slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.6);
+  background: linear-gradient(135deg, #93C5FD 0%, #60A5FA 100%);
+  cursor: grab;
+}
+
+.slider::-webkit-slider-thumb:active {
+  transform: scale(1.2);
+  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.8);
+  cursor: grabbing;
+}
+
+/* Firefox slider styling */
+.slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #60A5FA 0%, #3B82F6 100%);
+  border: 2px solid rgba(255, 255, 255, 0.2);
   cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+}
+
+.slider::-moz-range-track {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #2A2A2A, #3A3A3A);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Modern select styling */
+select {
+  transition: all 0.2s ease;
+  background: linear-gradient(135deg, #2A2A2A 0%, #1A1A1A 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #E5E5E5;
+}
+
+select:hover {
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
+}
+
+select:focus {
+  outline: none;
+  border-color: #3B82F6;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+}
+
+/* App card styling */
+.app-card {
+  transition: all 0.2s ease;
+  background: linear-gradient(135deg, 
+    rgba(42, 42, 42, 0.6) 0%, 
+    rgba(26, 26, 26, 0.8) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.app-card:hover {
+  border-color: rgba(59, 130, 246, 0.2);
+  background: linear-gradient(135deg, 
+    rgba(42, 42, 42, 0.8) 0%, 
+    rgba(26, 26, 26, 0.9) 100%);
+  transform: translateX(4px);
+}
+
+/* Drag and drop styling */
+.drop-zone.drag-over,
+.drop-zone.drag-over * {
+  border-color: #3B82F6 !important;
+  background-color: rgba(59, 130, 246, 0.2) !important;
+}
+
+.drop-zone.drag-over {
+  transform: scale(1.02);
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+  transition: all 0.2s ease;
+}
+
+/* Dragging state - simplified to avoid interfering with drag operation */
+.dragging {
+  opacity: 0.8;
+  /* Removed transform and pointer-events that could interrupt dragging */
+}
+
+/* Drop zone feedback */
+.drop-zone {
+  transition: all 0.2s ease;
+  position: relative;
+  pointer-events: auto !important;
+  z-index: 10;
+  /* Ensure the entire drop zone is interactive */
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+}
+
+.drop-zone:hover {
+  background-color: rgba(59, 130, 246, 0.05);
+}
+
+/* Prevent child elements from interfering with drag events */
+.drop-zone * {
+  pointer-events: none;
+}
+
+/* Re-enable pointer events for interactive elements inside drop zones */
+.drop-zone button,
+.drop-zone input {
+  pointer-events: auto;
+}
+
+/* When dragging is active, highlight all drop zones */
+body.dragging-active .drop-zone {
+  border-color: #60A5FA;
+  background-color: rgba(59, 130, 246, 0.05);
+}
+
+body.dragging-active .drop-zone::before {
+  content: "Drop here";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #60A5FA;
+  font-size: 14px;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+/* Loading animation */
+@keyframes pulse-glow {
+  0%, 100% { 
+    opacity: 0.5;
+    box-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
+  }
+  50% { 
+    opacity: 1;
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+  }
+}
+
+.loading {
+  animation: pulse-glow 2s ease-in-out infinite;
 }

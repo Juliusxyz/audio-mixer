@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "identifier": "com.juliusxyz.audio-mixer",
   "build": {
+    "beforeDevCommand": "vite",
+    "beforeBuildCommand": "vite build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173"
   },
@@ -16,7 +18,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "identifier": "com.juliusxyz.audio-mixer",
+
     "publisher": "JuliusXYZ",
     "shortDescription": "Professional Windows Audio Mixer",
     "longDescription": "A modern audio mixer for Windows with per-app routing and volume control"
@@ -28,7 +30,9 @@
         "width": 1200,
         "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "dragDropEnabled": false,
+        "devtools": true
       }
     ]
   },
