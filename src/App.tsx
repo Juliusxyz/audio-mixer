@@ -105,17 +105,17 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    // Auto-update check (temporarily enabled for testing)
-    if (isTauri) {
-      checkForUpdates();
-      
-      // Check for updates every hour
-      const updateInterval = setInterval(() => {
-        checkForUpdates();
-      }, 60 * 60 * 1000); // 1 hour
-      
-      return () => clearInterval(updateInterval);
-    }
+    // Auto-update check (disabled due to version parsing issues)
+    // if (isTauri) {
+    //   checkForUpdates();
+    //   
+    //   // Check for updates every hour
+    //   const updateInterval = setInterval(() => {
+    //     checkForUpdates();
+    //   }, 60 * 60 * 1000); // 1 hour
+    //   
+    //   return () => clearInterval(updateInterval);
+    // }
     
     // Lade initial die Daten
     loadInitialData();
@@ -152,45 +152,107 @@ export default function App() {
     }
     
     try {
-      console.log('Checking for updates...');
-      const { check } = await import('@tauri-apps/plugin-updater');
-      console.log('Updater plugin imported successfully');
-      const update = await check();
-      console.log('Update check result:', update);
+      console.log('Checking for updates manually due to version format issues...');
       
-      if (update?.available) {
-        console.log('Update available:', update.version);
+      // Manual check using fetch to avoid Tauri version parsing issues
+      const response = await fetch('https://api.github.com/repos/Juliusxyz/audio-mixer/releases/latest');
+      if (!response.ok) {
+        throw new Error(`GitHub API returned ${response.status}: ${response.statusText}`);
+      }
+      
+      const releaseData = await response.json();
+      console.log('GitHub release data:', releaseData);
+      
+      if (!releaseData.tag_name) {
+        throw new Error('No tag_name found in release data');
+      }
+      
+      // Remove 'v' prefix if present and compare versions
+      const latestVersion = releaseData.tag_name.replace(/^v/, '');
+      const currentVersion = '0.1.10'; // Current app version
+      
+      console.log('Comparing versions:', { current: currentVersion, latest: latestVersion });
+      
+      // Simple version comparison (works for x.y.z format)
+      const isNewerVersion = (latest: string, current: string) => {
+        const latestParts = latest.split('.').map(Number);
+        const currentParts = current.split('.').map(Number);
+        
+        for (let i = 0; i < Math.max(latestParts.length, currentParts.length); i++) {
+          const latestPart = latestParts[i] || 0;
+          const currentPart = currentParts[i] || 0;
+          
+          if (latestPart > currentPart) return true;
+          if (latestPart < currentPart) return false;
+        }
+        return false;
+      };
+      
+      if (isNewerVersion(latestVersion, currentVersion)) {
+        console.log('Update available:', latestVersion);
         setUpdateInfo({ 
-          version: update.version, 
-          notes: update.body || 'Bug fixes and improvements', 
+          version: latestVersion, 
+          notes: releaseData.body || 'Bug fixes and improvements', 
           available: true 
         });
+        
+        // Show update notification popup
+        const userChoice = confirm(
+          `A new version (${latestVersion}) is available!\n\n` +
+          'Would you like to download it from GitHub?\n' +
+          'Click OK to open the download page, or Cancel to ignore.'
+        );
+        
+        if (userChoice) {
+          // Open GitHub release page instead of using broken Tauri updater
+          window.open(`https://github.com/Juliusxyz/audio-mixer/releases/tag/${releaseData.tag_name}`, '_blank');
+        }
       } else {
         console.log('No updates available');
-        // Clear any existing update info if no update is available
         setUpdateInfo(null);
-        // Show a temporary message to user
         alert('No updates available. You have the latest version!');
       }
+      
     } catch (error) {
       console.error('Update check failed:', error);
       
-      // Provide more detailed error information
-      let errorMessage = 'Update check failed: ';
-      if (error instanceof Error) {
-        errorMessage += error.message;
+      // Fallback to original Tauri updater with error handling
+      try {
+        console.log('Falling back to Tauri updater...');
+        const { check } = await import('@tauri-apps/plugin-updater');
+        const update = await check();
         
-        // Special handling for common errors
-        if (error.message.includes('unexpected character')) {
-          errorMessage += '\n\nThis usually means the GitHub release API returned an unexpected response. Please check if the repository has published releases.';
-        } else if (error.message.includes('Not Found') || error.message.includes('404')) {
-          errorMessage += '\n\nNo releases found. Make sure the repository has published releases on GitHub.';
+        if (update?.available) {
+          setUpdateInfo({ 
+            version: update.version, 
+            notes: update.body || 'Bug fixes and improvements', 
+            available: true 
+          });
+          
+          const userChoice = confirm(
+            `A new version (${update.version}) is available!\n\n` +
+            'Would you like to install it now?\n' +
+            'Click OK to install now, or Cancel to install later.'
+          );
+          
+          if (userChoice) {
+            installUpdate();
+          }
+        } else {
+          setUpdateInfo(null);
+          alert('No updates available. You have the latest version!');
         }
-      } else {
-        errorMessage += String(error);
+      } catch (tauriError) {
+        console.error('Both manual and Tauri update checks failed:', tauriError);
+        
+        const manualCheck = confirm(
+          'Auto-update is not working properly.\n\n' +
+          'Would you like to check for updates manually on GitHub?'
+        );
+        if (manualCheck) {
+          window.open('https://github.com/Juliusxyz/audio-mixer/releases/latest', '_blank');
+        }
       }
-      
-      alert(errorMessage);
     }
   };
 
