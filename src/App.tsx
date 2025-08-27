@@ -58,7 +58,7 @@ export default function App() {
 
   useEffect(() => {
     // Auto-update check nur in Production
-    if (import.meta.env.PROD) {
+    if (import.meta.env.PROD && isTauri) {
       checkForUpdates();
     }
     
