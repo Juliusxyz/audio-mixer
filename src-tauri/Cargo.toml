@@ -1,0 +1,30 @@
+[package]
+name = "audio-mixer"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.4.0", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+cpal = { version = "0.15" }
+windows = { version = "0.54", features = [
+	"Win32_Foundation",
+	"Win32_System_Com",
+	"Win32_Media_Audio",
+	"Win32_System_ProcessStatus",
+	"Win32_System_Threading",
+	"Win32_Security"
+] }
+dirs-next = "2"
+
+# Tauri 2 core + updater plugin
+tauri = { version = "2.8.4", features = [] }
+tauri-plugin-updater = { version = "2.9.0" }
+
+[features]
+# Only Windows is supported for this starter
+default = []
