@@ -1,7 +1,24 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { getDevices, setRoute, setStreamVolume, type DeviceInfo, type StreamId, getRoutes, listAudioApps, type AppSession, getAppCategories, setAppCategory, clearAppCategory } from './bridge'
 import { invoke } from '@tauri-apps/api/core'
 import { check as checkUpdate } from '@tauri-apps/plugin-updater'
+
+// Debounce hook for volume changes
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value)
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value)
+    }, delay)
+
+    return () => {
+      clearTimeout(handler)
+    }
+  }, [value, delay])
+
+  return debouncedValue
+}
 
 const defaultStreams: StreamId[] = ['game', 'voice', 'music']
 
@@ -23,6 +40,7 @@ export default function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [routes, setRoutesState] = useState<Record<StreamId, string | null>>({ game: null, voice: null, music: null })
   const [volumes, setVolumes] = useState<Record<StreamId, number>>({ game: 0.8, voice: 0.8, music: 0.8 })
+  const [pendingVolumes, setPendingVolumes] = useState<Record<StreamId, number>>({ game: 0.8, voice: 0.8, music: 0.8 })
   const [updateInfo, setUpdateInfo] = useState<{version: string, notes?: string, available: boolean} | null>(null)
   const [isUpdating, setIsUpdating] = useState(false)
   const [apps, setApps] = useState<AppSession[]>([])
@@ -55,6 +73,11 @@ export default function App() {
       document.removeEventListener('dragover', handleGlobalDragOver)
       document.removeEventListener('drop', handleGlobalDrop)
     }
+  }, [])
+
+  // Initialize pending volumes with actual volumes
+  useEffect(() => {
+    setPendingVolumes(volumes)
   }, [])
 
   useEffect(() => {
@@ -181,6 +204,25 @@ export default function App() {
     [devices]
   );
 
+  // Debounce volume changes to reduce backend calls
+  const debouncedVolumes = useDebounce(pendingVolumes, 150) // 150ms delay
+
+  // Effect to handle debounced volume updates
+  useEffect(() => {
+    const updateVolumes = async () => {
+      for (const [stream, volume] of Object.entries(debouncedVolumes)) {
+        if (volumes[stream as StreamId] !== volume) {
+          console.log(`Setting volume for ${stream} to ${volume}`);
+          const ok = await setStreamVolume(stream as StreamId, volume);
+          if (ok) {
+            setVolumes(prev => ({ ...prev, [stream as StreamId]: volume }));
+          }
+        }
+      }
+    }
+    updateVolumes()
+  }, [debouncedVolumes, volumes])
+
   const onRoute = async (stream: StreamId, deviceId: string | null) => {
     const ok = await setRoute(stream, deviceId);
     if (ok) {
@@ -188,12 +230,9 @@ export default function App() {
     }
   };
 
-  const onVolume = async (stream: StreamId, volume: number) => {
-    console.log(`Setting volume for ${stream} to ${volume}`);
-    const ok = await setStreamVolume(stream, volume);
-    if (ok) {
-      setVolumes(prev => ({ ...prev, [stream]: volume }));
-    }
+  // Immediate UI update for volume changes, debounced backend calls
+  const onVolume = (stream: StreamId, volume: number) => {
+    setPendingVolumes(prev => ({ ...prev, [stream]: volume }));
   };
 
   const onAssign = async (pid: number, value: '' | StreamId | string) => {
@@ -508,7 +547,7 @@ export default function App() {
                     stream={stream}
                     devices={outputDevices}
                     route={routes[stream]}
-                    volume={volumes[stream]}
+                    volume={pendingVolumes[stream]}
                     onRoute={onRoute}
                     onVolume={onVolume}
                   />

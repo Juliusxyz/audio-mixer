@@ -1,6 +1,6 @@
 {
   "productName": "Audio Mixer",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "identifier": "com.juliusxyz.audio-mixer",
   "build": {
     "beforeDevCommand": "vite",
@@ -43,7 +43,7 @@
         "https://api.github.com/repos/Juliusxyz/audio-mixer/releases/latest"
       ],
       "dialog": false,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM0NkUwQ0E3QjEwRDRFMzUKUldRMVRnMnhwd3h1TkllaHpEYVBQaVJOZEJVRmJnNjE0RjFoSEkxMlFmb285Nyt1OU1JaTJxemoK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE1Mjg4MDA5NzBCODQ0QkYKUldTL1JMaHdDWUFvcFNPRFlTbGJ6b21yT2xQaFdxNW9nMjVvbjN4cmxNUDBxSnd5RkFZbEltNmQK"
     }
   }
 }
