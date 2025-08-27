@@ -1,7 +1,7 @@
 {
   "name": "audio-mixer",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Professional Windows Audio Mixer",
   "type": "module",
   "scripts": {

@@ -174,7 +174,23 @@ export default function App() {
       }
     } catch (error) {
       console.error('Update check failed:', error);
-      alert('Update check failed: ' + error);
+      
+      // Provide more detailed error information
+      let errorMessage = 'Update check failed: ';
+      if (error instanceof Error) {
+        errorMessage += error.message;
+        
+        // Special handling for common errors
+        if (error.message.includes('unexpected character')) {
+          errorMessage += '\n\nThis usually means the GitHub release API returned an unexpected response. Please check if the repository has published releases.';
+        } else if (error.message.includes('Not Found') || error.message.includes('404')) {
+          errorMessage += '\n\nNo releases found. Make sure the repository has published releases on GitHub.';
+        }
+      } else {
+        errorMessage += String(error);
+      }
+      
+      alert(errorMessage);
     }
   };
 
