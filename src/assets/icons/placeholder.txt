@@ -1,0 +1,16 @@
+# Icon Placeholders
+
+This folder contains placeholder icon files. Replace these with actual PNG icons for the applications.
+
+For now, you can add PNG files with these names to see real icons:
+
+- discord.png (for Discord)
+- spotify.png (for Spotify)  
+- chrome.png (for Google Chrome)
+- firefox.png (for Firefox)
+- steam.png (for Steam)
+- vlc.png (for VLC Media Player)
+- obs.png (for OBS Studio)
+- vscode.png (for Visual Studio Code)
+
+The system will automatically detect and use these icons when the corresponding applications are running.

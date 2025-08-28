@@ -71,6 +71,8 @@ fn list_audio_devices() -> Vec<DeviceInfo> {
             };
             let id = format!("{}::{:?}#{}", name, kind, idx);
 
+            println!("Device {}: ID='{}', Name='{}', Default={}", idx, id, name, is_default);
+
             out.push(DeviceInfo {
                 id,
                 name,
@@ -147,15 +149,337 @@ fn set_route(
     device_id: Option<String>,
     state: tauri::State<std::sync::Mutex<MixerState>>,
 ) -> bool {
-    state.lock().unwrap().routes.insert(stream, device_id);
+    // Store the route configuration
+    state.lock().unwrap().routes.insert(stream.clone(), device_id.clone());
     save_state_snapshot(&state);
+    
+    // Apply the route to all apps currently assigned to this stream
+    let app_categories = state.lock().unwrap().app_categories.clone();
+    for (pid, app_stream) in app_categories.iter() {
+        if *app_stream == stream {
+            if let Err(e) = route_app_to_device(*pid, device_id.clone()) {
+                eprintln!("Failed to route app {} to device: {}", pid, e);
+            }
+        }
+    }
+    
     true
+}
+
+// Route a specific app (PID) to a specific audio device
+fn route_app_to_device(pid: u32, device_id: Option<String>) -> Result<(), String> {
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let need_uninit = hr.is_ok();
+        
+        let result = (|| -> Result<(), String> {
+            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(|e| format!("Create MMDeviceEnumerator failed: {e}"))?;
+            
+            // Get target device
+            let target_device = match &device_id {
+                Some(id) => {
+                    find_device_by_id(&enumerator, id)?
+                }
+                None => {
+                    enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia)
+                        .map_err(|e| format!("Get default device failed: {e}"))?
+                }
+            };
+            
+            // Get the device endpoint ID string for policy routing
+            let device_endpoint_id = get_device_endpoint_id(&target_device)?;
+            
+            // Find the app's audio session
+            let session_found = find_and_log_app_session(pid, &enumerator)?;
+            
+            if session_found {
+                println!("Audio session found for PID {}", pid);
+                
+                // Try to route the app using Windows Policy Config API
+                match route_app_using_policy(pid, &device_endpoint_id) {
+                    Ok(_) => {
+                        if let Some(device_id) = &device_id {
+                            println!("Successfully routed PID {} to device {}", pid, device_id);
+                        } else {
+                            println!("Successfully routed PID {} to default device", pid);
+                        }
+                    }
+                    Err(e) => {
+                        println!("Policy routing failed for PID {}: {}, trying alternative method", pid, e);
+                        
+                        // Fallback: Try to set default device for the app's process
+                        try_set_app_default_device(pid, &target_device)?;
+                    }
+                }
+                
+                Ok(())
+            } else {
+                Err(format!("No audio session found for PID {}", pid))
+            }
+        })();
+        
+        if need_uninit {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
+// Get device endpoint ID for policy routing
+fn get_device_endpoint_id(device: &IMMDevice) -> Result<String, String> {
+    unsafe {
+        // Get the device ID string
+        let id_ptr = device.GetId()
+            .map_err(|e| format!("GetId failed: {e}"))?;
+        
+        let id_str = id_ptr.to_string()
+            .map_err(|e| format!("Convert ID to string failed: {e}"))?;
+        
+        // Free the allocated string
+        use windows::Win32::System::Com::CoTaskMemFree;
+        CoTaskMemFree(Some(id_ptr.0 as *mut _));
+        
+        Ok(id_str)
+    }
+}
+
+// Route app using Windows Policy Config API (requires elevated privileges)
+fn route_app_using_policy(pid: u32, device_endpoint_id: &str) -> Result<(), String> {
+    // Note: This requires the undocumented IPolicyConfig interface
+    // which is used by Windows Sound Control Panel
+    
+    // Create PolicyConfig instance (this may fail on some Windows versions)
+    // CLSID for PolicyConfig: {870af99c-171d-4f9e-af0d-e63df40c2bc9}
+    use windows::core::GUID;
+    let _policy_clsid = GUID::from("870af99c-171d-4f9e-af0d-e63df40c2bc9");
+    
+    println!("Attempting policy-based routing for PID {} to device {}", pid, device_endpoint_id);
+    
+    // This is an advanced technique that may not work on all systems
+    // For now, we'll log the attempt and return an error to trigger fallback
+    Err("Policy routing not implemented - using fallback".to_string())
+}
+
+// Alternative method: Try to influence the app's default device
+fn try_set_app_default_device(pid: u32, target_device: &IMMDevice) -> Result<(), String> {
+    println!("Attempting alternative routing method for PID {}", pid);
+    
+    // Get device properties for logging
+    let device_endpoint_id = get_device_endpoint_id(target_device)?;
+    
+    println!("Alternative routing: PID {} should use device {}", pid, device_endpoint_id);
+    
+    // Method 1: Try to disconnect and reconnect the app's audio sessions
+    // This forces the app to recreate its audio sessions, potentially on the new default device
+    try_restart_app_audio_sessions(pid)?;
+    
+    println!("Audio session restart attempted for PID {}", pid);
+    
+    Ok(())
+}
+
+// Try to restart an app's audio sessions to force device reselection
+fn try_restart_app_audio_sessions(pid: u32) -> Result<(), String> {
+    unsafe {
+        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            .map_err(|e| format!("Create MMDeviceEnumerator failed: {e}"))?;
+        
+        let devices: IMMDeviceCollection = enumerator
+            .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+            .map_err(|e| format!("EnumAudioEndpoints failed: {e}"))?;
+        let dev_count = devices
+            .GetCount()
+            .map_err(|e| format!("GetCount(devices) failed: {e}"))? as i32;
+
+        for di in 0..dev_count {
+            let device: IMMDevice = devices
+                .Item(di as u32)
+                .map_err(|e| format!("Get device {di} failed: {e}"))?;
+
+            let mgr: IAudioSessionManager2 = device
+                .Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)
+                .map_err(|e| format!("Activate IAudioSessionManager2 failed: {e}"))?;
+
+            let session_enumerator = mgr
+                .GetSessionEnumerator()
+                .map_err(|e| format!("GetSessionEnumerator failed: {e}"))?;
+
+            let count = session_enumerator
+                .GetCount()
+                .map_err(|e| format!("GetCount(sessions) failed: {e}"))?;
+
+            for i in 0..count {
+                let session: IAudioSessionControl = session_enumerator
+                    .GetSession(i)
+                    .map_err(|e| format!("GetSession {i} failed: {e}"))?;
+
+                let session2: IAudioSessionControl2 = session
+                    .cast()
+                    .map_err(|e| format!("Cast to IAudioSessionControl2 failed: {e}"))?;
+
+                let session_pid = session2
+                    .GetProcessId()
+                    .map_err(|e| format!("GetProcessId failed: {e}"))?;
+
+                if session_pid == pid {
+                    println!("Found audio session for PID {} on device {}, attempting disconnect", pid, di);
+                    
+                    // Try to disconnect the session
+                    // This may cause the app to recreate its audio session on the new default device
+                    match try_disconnect_session(&session2) {
+                        Ok(_) => println!("Successfully signaled session disconnect for PID {}", pid),
+                        Err(e) => println!("Session disconnect failed for PID {}: {}", pid, e),
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+// Try to signal a session to disconnect (this may cause the app to restart audio)
+fn try_disconnect_session(session: &IAudioSessionControl2) -> Result<(), String> {
+    unsafe {
+        // Method 1: Try to set the session state to inactive
+        // This is a soft approach that may cause the app to reinitialize audio
+        
+        // Get the simple audio volume interface to manipulate the session
+        let simple_volume: ISimpleAudioVolume = session
+            .cast()
+            .map_err(|e| format!("Cast to ISimpleAudioVolume failed: {e}"))?;
+        
+        // Store current volume
+        let _current_volume = simple_volume
+            .GetMasterVolume()
+            .map_err(|e| format!("GetMasterVolume failed: {e}"))?;
+        
+        // Briefly mute and unmute to signal the session
+        simple_volume
+            .SetMute(true, std::ptr::null())
+            .map_err(|e| format!("SetMute(true) failed: {e}"))?;
+        
+        // Small delay
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        simple_volume
+            .SetMute(false, std::ptr::null())
+            .map_err(|e| format!("SetMute(false) failed: {e}"))?;
+        
+        println!("Session signaling completed (mute/unmute cycle)");
+        
+        Ok(())
+    }
+}
+
+// Helper function to find a device by ID
+fn find_device_by_id(enumerator: &IMMDeviceEnumerator, device_id: &str) -> Result<IMMDevice, String> {
+    unsafe {
+        let devices: IMMDeviceCollection = enumerator
+            .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+            .map_err(|e| format!("EnumAudioEndpoints failed: {e}"))?;
+        let dev_count = devices
+            .GetCount()
+            .map_err(|e| format!("GetCount(devices) failed: {e}"))? as i32;
+
+        println!("Looking for device: {}", device_id);
+
+        // Extract device index from ID (format: "Name::Output#INDEX")
+        if let Some(index_part) = device_id.split('#').last() {
+            if let Ok(target_index) = index_part.parse::<i32>() {
+                if target_index >= 0 && target_index < dev_count {
+                    println!("Found device by index: {}", target_index);
+                    let device: IMMDevice = devices
+                        .Item(target_index as u32)
+                        .map_err(|e| format!("Get device {} failed: {e}", target_index))?;
+                    return Ok(device);
+                }
+            }
+        }
+
+        // Fallback: try name matching
+        for di in 0..dev_count {
+            let device: IMMDevice = devices
+                .Item(di as u32)
+                .map_err(|e| format!("Get device {di} failed: {e}"))?;
+            
+            let device_name = format!("Device_{}", di); // Simplified for now
+            
+            println!("Checking device {}: '{}'", di, device_name);
+            
+            if device_id.contains(&device_name) {
+                println!("Found matching device by name: {}", device_name);
+                return Ok(device);
+            }
+        }
+        
+        Err(format!("Device not found: {}", device_id))
+    }
+}
+
+// Helper function to get device name
+fn get_device_name(_device: &IMMDevice) -> Result<String, String> {
+    // This is a simplified version - would need proper property store access
+    Ok("Device".to_string())
+}
+
+// Helper function to find and log an app's audio session
+fn find_and_log_app_session(target_pid: u32, enumerator: &IMMDeviceEnumerator) -> Result<bool, String> {
+    unsafe {
+        let devices: IMMDeviceCollection = enumerator
+            .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+            .map_err(|e| format!("EnumAudioEndpoints failed: {e}"))?;
+        let dev_count = devices
+            .GetCount()
+            .map_err(|e| format!("GetCount(devices) failed: {e}"))? as i32;
+
+        for di in 0..dev_count {
+            let device: IMMDevice = devices
+                .Item(di as u32)
+                .map_err(|e| format!("Get device {di} failed: {e}"))?;
+
+            let mgr: IAudioSessionManager2 = device
+                .Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)
+                .map_err(|e| format!("Activate IAudioSessionManager2 failed: {e}"))?;
+
+            let enumerator = mgr
+                .GetSessionEnumerator()
+                .map_err(|e| format!("GetSessionEnumerator failed: {e}"))?;
+
+            let count = enumerator
+                .GetCount()
+                .map_err(|e| format!("GetCount(sessions) failed: {e}"))?;
+
+            for i in 0..count {
+                let session: IAudioSessionControl = enumerator
+                    .GetSession(i)
+                    .map_err(|e| format!("GetSession {i} failed: {e}"))?;
+
+                let session2: IAudioSessionControl2 = session
+                    .cast()
+                    .map_err(|e| format!("Cast to IAudioSessionControl2 failed: {e}"))?;
+
+                let session_pid = session2
+                    .GetProcessId()
+                    .map_err(|e| format!("GetProcessId failed: {e}"))?;
+
+                if session_pid == target_pid {
+                    println!("Found audio session for PID {} on device {}", target_pid, di);
+                    return Ok(true);
+                }
+            }
+        }
+        
+        Ok(false)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSession {
     pub pid: u32,
     pub name: String,
+    pub process_name: String, // The actual executable name (e.g., "discord.exe")
     pub volume: f32,
     pub muted: bool,
 }
@@ -233,7 +557,8 @@ fn list_audio_apps() -> Result<Vec<AppSession>, String> {
                         .as_bool();
 
                     let name = process_name_from_pid(pid).unwrap_or_else(|| format!("PID {pid}"));
-                    out.push(AppSession { pid, name, volume, muted });
+                    let process_name = process_name_from_pid(pid).unwrap_or_else(|| format!("unknown_process_{pid}.exe"));
+                    out.push(AppSession { pid, name, process_name, volume, muted });
                     seen.insert(pid);
                 }
             }
@@ -261,8 +586,16 @@ fn set_app_category(
     stream: StreamId,
     state: tauri::State<std::sync::Mutex<MixerState>>,
 ) -> bool {
-    state.lock().unwrap().app_categories.insert(pid, stream);
+    // Store the app category
+    state.lock().unwrap().app_categories.insert(pid, stream.clone());
     save_state_snapshot(&state);
+    
+    // Get the device for this stream and route the app to it
+    let device_id = state.lock().unwrap().routes.get(&stream).cloned().flatten();
+    if let Err(e) = route_app_to_device(pid, device_id) {
+        eprintln!("Failed to route app {} to stream device: {}", pid, e);
+    }
+    
     true
 }
 

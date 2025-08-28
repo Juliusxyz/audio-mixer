@@ -30,6 +30,7 @@ export async function setStreamVolume(stream: StreamId, volume: number): Promise
 export interface AppSession {
   pid: number
   name: string
+  process_name: string // The actual executable name (e.g., "discord.exe")
   volume: number
   muted: boolean
 }
@@ -52,4 +53,29 @@ export async function setAppVolume(pid: number, volume: number): Promise<boolean
 
 export async function clearAppCategory(pid: number): Promise<boolean> {
   return await invoke('clear_app_category', { pid })
+}
+
+export async function getAppIcon(processName: string): Promise<string | null> {
+  try {
+    // Import the icon mapping and registry
+    const { getIconForProcess } = await import('./assets/icons/iconMapping');
+    const { getIconUrl } = await import('./assets/icons/iconRegistry');
+    
+    const iconMapping = getIconForProcess(processName);
+    
+    if (iconMapping) {
+      // Get the icon URL from the registry
+      const iconUrl = getIconUrl(iconMapping.iconFile);
+      if (iconUrl) {
+        return iconUrl;
+      } else {
+        console.warn(`Icon not found in registry: ${iconMapping.iconFile}`);
+      }
+    }
+    
+    return null; // Fall back to letter icon
+  } catch (error) {
+    console.warn(`Failed to get icon for process ${processName}:`, error);
+    return null;
+  }
 }

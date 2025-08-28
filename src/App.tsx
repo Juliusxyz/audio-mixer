@@ -1,7 +1,20 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import { getDevices, setRoute, setStreamVolume, type DeviceInfo, type StreamId, getRoutes, listAudioApps, type AppSession, getAppCategories, setAppCategory, clearAppCategory } from './bridge'
+import { getDevices, setRoute, setStreamVolume, type DeviceInfo, type StreamId, getRoutes, listAudioApps, type AppSession, getAppCategories, setAppCategory, clearAppCategory, getAppIcon, setAppVolume } from './bridge'
 import { invoke } from '@tauri-apps/api/core'
 import { check as checkUpdate } from '@tauri-apps/plugin-updater'
+
+// Throttle function to limit API calls frequency
+function useThrottle<T extends (...args: any[]) => any>(func: T, delay: number): T {
+  const [lastCall, setLastCall] = useState<number>(0)
+  
+  return useCallback((...args: any[]) => {
+    const now = Date.now()
+    if (now - lastCall >= delay) {
+      setLastCall(now)
+      return func(...args)
+    }
+  }, [func, delay, lastCall]) as T
+}
 
 // Debounce hook for volume changes
 function useDebounce<T>(value: T, delay: number): T {
@@ -22,6 +35,19 @@ function useDebounce<T>(value: T, delay: number): T {
 
 const defaultStreams: StreamId[] = ['game', 'voice', 'music']
 
+// Stream display configuration
+const streamNames = {
+  game: 'Game Audio',
+  voice: 'Voice Chat',  
+  music: 'Music & Media'
+}
+
+const streamIcons = {
+  game: '🎮',
+  voice: '🎤',
+  music: '🎵'
+}
+
 // Category management types
 type Category = {
   id: string
@@ -40,18 +66,242 @@ export default function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [routes, setRoutesState] = useState<Record<StreamId, string | null>>({ game: null, voice: null, music: null })
   const [volumes, setVolumes] = useState<Record<StreamId, number>>({ game: 0.8, voice: 0.8, music: 0.8 })
-  const [pendingVolumes, setPendingVolumes] = useState<Record<StreamId, number>>({ game: 0.8, voice: 0.8, music: 0.8 })
+  const [customMixerVolumes, setCustomMixerVolumes] = useState<Record<string, number>>({})
+  const [customMixerRoutes, setCustomMixerRoutes] = useState<Record<string, string | null>>({})
+  // Load icon cache from localStorage on startup
+  const loadIconCache = (): Record<string, string> => {
+    try {
+      const cached = localStorage.getItem('wavelink-icon-cache')
+      if (cached) {
+        const parsed = JSON.parse(cached)
+        console.log('Loaded icon cache with', Object.keys(parsed).length, 'entries')
+        return parsed
+      }
+    } catch (error) {
+      console.error('Failed to load icon cache:', error)
+    }
+    return {}
+  }
+
+  // Save icon cache to localStorage
+  const saveIconCache = (cache: Record<string, string>) => {
+    try {
+      localStorage.setItem('wavelink-icon-cache', JSON.stringify(cache))
+      console.log('Saved icon cache with', Object.keys(cache).length, 'entries')
+    } catch (error) {
+      console.error('Failed to save icon cache:', error)
+    }
+  }
+
+  // Load volumes from localStorage on startup
+  const loadSavedVolumes = (): Record<StreamId, number> => {
+    try {
+      const saved = localStorage.getItem('wavelink-volumes')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        console.log('Loaded saved volumes:', parsed)
+        return { game: 0.8, voice: 0.8, music: 0.8, ...parsed }
+      }
+    } catch (error) {
+      console.error('Failed to load saved volumes:', error)
+    }
+    return { game: 0.8, voice: 0.8, music: 0.8 }
+  }
+
+  // Save volumes to localStorage
+  const saveVolumes = (volumes: Record<StreamId, number>) => {
+    try {
+      localStorage.setItem('wavelink-volumes', JSON.stringify(volumes))
+      console.log('Saved volumes:', volumes)
+    } catch (error) {
+      console.error('Failed to save volumes:', error)
+    }
+  }
+
+  // Load custom mixer volumes from localStorage on startup
+  const loadCustomMixerVolumes = (): Record<string, number> => {
+    try {
+      const saved = localStorage.getItem('wavelink-custom-mixer-volumes')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        console.log('Loaded saved custom mixer volumes:', parsed)
+        return parsed
+      }
+    } catch (error) {
+      console.error('Failed to load saved custom mixer volumes:', error)
+    }
+    return {}
+  }
+
+  // Save custom mixer volumes to localStorage
+  const saveCustomMixerVolumes = (volumes: Record<string, number>) => {
+    try {
+      localStorage.setItem('wavelink-custom-mixer-volumes', JSON.stringify(volumes))
+      console.log('Saved custom mixer volumes:', volumes)
+    } catch (error) {
+      console.error('Failed to save custom mixer volumes:', error)
+    }
+  }
+
+  const [pendingVolumes, setPendingVolumes] = useState<Record<StreamId, number>>(loadSavedVolumes())
   const [updateInfo, setUpdateInfo] = useState<{version: string, notes?: string, available: boolean} | null>(null)
   const [isUpdating, setIsUpdating] = useState(false)
   const [apps, setApps] = useState<AppSession[]>([])
   const [appCategories, setAppCategoriesState] = useState<Record<number, StreamId | string>>({})
   const [isLoading, setIsLoading] = useState(true)
+  const [loadingStage, setLoadingStage] = useState('Initializing...')
   const [categories, setCategories] = useState<Category[]>(defaultCategories)
   const [draggedApp, setDraggedApp] = useState<AppSession | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 })
   const [editingCategory, setEditingCategory] = useState<string | null>(null)
   const [newCategoryName, setNewCategoryName] = useState('')
+  
+  // Initialize icon cache on startup
+  useEffect(() => {
+    const cache = loadIconCache()
+    setIconCache(cache)
+  }, [])
+  // Load custom mixers from localStorage on startup
+  const loadSavedMixers = (): Array<{id: string, name: string, apps: number[]}> => {
+    try {
+      const saved = localStorage.getItem('wavelink-custom-mixers')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        console.log('Loaded saved custom mixers:', parsed)
+        return parsed
+      }
+    } catch (error) {
+      console.error('Failed to load saved custom mixers:', error)
+    }
+    return []
+  }
+
+  // Load muted streams from localStorage on startup
+  const loadMutedStreams = (): Set<string> => {
+    try {
+      const saved = localStorage.getItem('wavelink-muted-streams')
+      if (saved) {
+        const parsed = JSON.parse(saved) as string[]
+        return new Set(parsed)
+      }
+    } catch (error) {
+      console.error('Failed to load muted streams:', error)
+    }
+    return new Set()
+  }
+
+  // Save muted streams to localStorage
+  const saveMutedStreams = (mutedStreams: Set<string>) => {
+    try {
+      localStorage.setItem('wavelink-muted-streams', JSON.stringify(Array.from(mutedStreams)))
+    } catch (error) {
+      console.error('Failed to save muted streams:', error)
+    }
+  }
+
+  // Save custom mixers to localStorage
+  const saveCustomMixers = (mixers: Array<{id: string, name: string, apps: number[]}>) => {
+    try {
+      localStorage.setItem('wavelink-custom-mixers', JSON.stringify(mixers))
+      console.log('Saved custom mixers:', mixers)
+    } catch (error) {
+      console.error('Failed to save custom mixers:', error)
+    }
+  }
+
+  const [customMixers, setCustomMixers] = useState<Array<{id: string, name: string, apps: number[]}>>([])
+  const [editingMixer, setEditingMixer] = useState<string | null>(null)
+  const [openDeviceDropdown, setOpenDeviceDropdown] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{x: number, y: number, mixerId: string} | null>(null)
+  const [editingVolume, setEditingVolume] = useState<string | null>(null)
+  const [tempVolumeInput, setTempVolumeInput] = useState('')
+  const [mutedStreams, setMutedStreams] = useState<Set<string>>(new Set())
+  const [mutedVolumes, setMutedVolumes] = useState<Record<string, number>>({})
+  const [audioLevels, setAudioLevels] = useState<Record<string, number>>({})
+  const [appIcons, setAppIcons] = useState<Record<number, string>>({}) // PID -> icon URL
+  const [iconCache, setIconCache] = useState<Record<string, string>>({}) // process_name -> icon URL (persistent cache)
+  const [loadingIcons, setLoadingIcons] = useState<Set<string>>(new Set()) // Track which icons are currently loading
+  
+  // Load saved data on startup
+  useEffect(() => {
+    // Load saved volumes
+    const savedVolumes = loadSavedVolumes()
+    setVolumes(savedVolumes)
+    
+    // Load saved custom mixers
+    const savedCustomMixers = loadSavedMixers()
+    setCustomMixers(savedCustomMixers)
+    
+    // Load saved custom mixer volumes
+    const savedCustomMixerVolumes = loadCustomMixerVolumes()
+    setCustomMixerVolumes(savedCustomMixerVolumes)
+    
+    // Load saved muted streams
+    const savedMutedStreams = loadMutedStreams()
+    setMutedStreams(savedMutedStreams)
+    
+    // Load icon cache
+    const savedIconCache = loadIconCache()
+    setIconCache(savedIconCache)
+  }, [])
+  
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setAudioLevels(prev => {
+        const newLevels: Record<string, number> = {}
+        
+        // Simulate levels for standard streams based on volume and activity
+        const streams: StreamId[] = ['game', 'voice', 'music']
+        streams.forEach(stream => {
+          if (!mutedStreams.has(stream) && (pendingVolumes[stream] || 0) > 0) {
+            // Random audio activity simulation
+            const baseLevel = (pendingVolumes[stream] || 0) * 0.8
+            const variation = Math.random() * 0.4 - 0.2 // -0.2 to +0.2
+            newLevels[stream] = Math.max(0, Math.min(1, baseLevel + variation))
+          } else {
+            newLevels[stream] = 0
+          }
+        })
+        
+        // Simulate levels for custom mixers
+        customMixers.forEach(mixer => {
+          if (!mutedStreams.has(mixer.id) && mixer.apps.length > 0) {
+            // Simulate activity if mixer has apps
+            const baseLevel = 0.6
+            const variation = Math.random() * 0.4 - 0.2
+            newLevels[mixer.id] = Math.max(0, Math.min(1, baseLevel + variation))
+          } else {
+            newLevels[mixer.id] = 0
+          }
+        })
+        
+        return newLevels
+      })
+    }, 100) // Update every 100ms for smooth animation
+    
+    return () => clearInterval(interval)
+  }, [mutedStreams, pendingVolumes, customMixers])
+
+  // Initialize volumes for existing custom mixers that don't have volumes yet
+  useEffect(() => {
+    const missingVolumes: Record<string, number> = {}
+    let hasChanges = false
+    
+    customMixers.forEach(mixer => {
+      if (!(mixer.id in customMixerVolumes)) {
+        missingVolumes[mixer.id] = 0.8
+        hasChanges = true
+      }
+    })
+    
+    if (hasChanges) {
+      const newVolumes = { ...customMixerVolumes, ...missingVolumes }
+      setCustomMixerVolumes(newVolumes)
+      saveCustomMixerVolumes(newVolumes)
+      console.log('Initialized missing custom mixer volumes:', missingVolumes)
+    }
+  }, [customMixers, customMixerVolumes])
 
   // Check if we're running in Tauri
   // More reliable Tauri detection
@@ -90,18 +340,47 @@ export default function App() {
       e.preventDefault()
     }
 
+    const handleGlobalClick = (e: Event) => {
+      // Don't close context menu if clicking on a mixer (let mixer handle it)
+      const target = e.target as HTMLElement
+      if (target?.closest('.wavelink-channel')) return
+      
+      setContextMenu(null)
+      setOpenDeviceDropdown(null)
+    }
+
+    const handleGlobalContextMenu = (e: Event) => {
+      // Prevent default context menu unless on a mixer
+      const target = e.target as HTMLElement
+      if (!target?.closest('.wavelink-channel')) {
+        e.preventDefault()
+      }
+    }
+
     document.addEventListener('dragover', handleGlobalDragOver)
     document.addEventListener('drop', handleGlobalDrop)
+    document.addEventListener('click', handleGlobalClick)
+    document.addEventListener('contextmenu', handleGlobalContextMenu)
 
     return () => {
       document.removeEventListener('dragover', handleGlobalDragOver)
       document.removeEventListener('drop', handleGlobalDrop)
+      document.removeEventListener('click', handleGlobalClick)
+      document.removeEventListener('contextmenu', handleGlobalContextMenu)
     }
   }, [])
 
-  // Initialize pending volumes with actual volumes
+  // Initialize pending volumes with actual volumes (but prioritize saved ones)
   useEffect(() => {
-    setPendingVolumes(volumes)
+    // Only sync from backend if we don't have saved volumes
+    const hasSavedVolumes = localStorage.getItem('wavelink-volumes')
+    if (!hasSavedVolumes) {
+      console.log('No saved volumes found, using backend volumes:', volumes)
+      setPendingVolumes(volumes)
+      saveVolumes(volumes)
+    } else {
+      console.log('Using saved volumes, not overriding with backend')
+    }
   }, [])
 
   useEffect(() => {
@@ -120,26 +399,66 @@ export default function App() {
     // Lade initial die Daten
     loadInitialData();
     
+    // PRIORITY 1: Aggressive icon preload starts IMMEDIATELY
+    aggressiveIconPreload();
+    
     // Auto-refresh Apps alle 4 Sekunden
     const interval = setInterval(() => {
       loadApps();
       loadAppCategories();
     }, 4000);
+
+    // Global cleanup for drag state (in case drag ends outside the app)
+    const handleGlobalCleanup = () => {
+      // No longer needed for cursor management
+    }
+
+    // Listen for escape key to cancel drag
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleGlobalCleanup()
+        setDraggedApp(null)
+        setDragTarget(null)
+        setIsDragging(false)
+      }
+    }
+
+    document.addEventListener('keydown', handleEscape)
     
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('keydown', handleEscape)
+      handleGlobalCleanup() // Cleanup on unmount
+    }
   }, [])
 
   const loadInitialData = async () => {
     setIsLoading(true);
     try {
-      await Promise.all([
-        loadDevices(),
-        loadApps(),
-        loadAppCategories(),
-        loadRoutes()
-      ]);
-    } finally {
-      setIsLoading(false);
+      setLoadingStage('Loading audio devices...')
+      await loadDevices()
+      
+      setLoadingStage('Loading applications...')
+      await loadApps()
+      
+      setLoadingStage('Loading app categories...')
+      await loadAppCategories()
+      
+      setLoadingStage('Loading audio routes...')
+      await loadRoutes()
+      
+      setLoadingStage('Finalizing...')
+      
+      // Small delay to show completion
+      setTimeout(() => {
+        setIsLoading(false);
+      }, 500);
+    } catch (error) {
+      console.error('Failed to load initial data:', error);
+      setLoadingStage('Error loading data...')
+      setTimeout(() => {
+        setIsLoading(false);
+      }, 1000);
     }
   };
 
@@ -294,12 +613,145 @@ export default function App() {
 
   const loadApps = async () => {
     try {
-      const apps = await listAudioApps();
-      setApps(apps);
+      const newApps = await listAudioApps();
+      
+      // Check for new apps that need icon preloading
+      const currentAppPids = new Set(apps.map(app => app.pid))
+      const newlyAddedApps = newApps.filter(app => !currentAppPids.has(app.pid))
+      
+      setApps(newApps);
+      
+      // Preload icons for new apps immediately (non-blocking)
+      if (newlyAddedApps.length > 0) {
+        console.log(`🆕 Detected ${newlyAddedApps.length} new apps, preloading icons...`)
+        newlyAddedApps.forEach(app => preloadSingleIcon(app))
+      }
+      
+      // Load missing icons for existing apps (batched, low priority)
+      await loadAppIcons(newApps);
     } catch (error) {
       console.error('Failed to load apps:', error);
     }
   };
+
+  const loadAppIcons = async (apps: AppSession[]) => {
+    if (!isTauri) return; // Only load icons in Tauri environment
+    
+    console.log('🎨 Regular icon loading for', apps.length, 'apps (low priority)')
+    
+    // Apply cached icons immediately for instant UI response
+    const newAppIcons: Record<number, string> = {}
+    let cacheHits = 0
+    
+    apps.forEach(app => {
+      const cachedIcon = iconCache[app.process_name]
+      if (cachedIcon) {
+        newAppIcons[app.pid] = cachedIcon
+        cacheHits++
+      }
+    })
+    
+    if (cacheHits > 0) {
+      console.log(`⚡ Applied ${cacheHits} cached icons (regular loading)`)
+      setAppIcons(prev => ({ ...prev, ...newAppIcons }))
+    }
+    
+    // Find missing icons (skip if already loading or recently failed)
+    const appsNeedingIcons = apps.filter(app => 
+      !iconCache[app.process_name] && !loadingIcons.has(app.process_name)
+    )
+    
+    if (appsNeedingIcons.length === 0) {
+      console.log('✅ No additional icons needed (regular loading)')
+      return
+    }
+    
+    console.log(`🔄 Regular loading ${appsNeedingIcons.length} missing icons (batched)`)
+    
+    // Use conservative batching for regular loading to avoid overwhelming system
+    const batchSize = 2 // Smaller batches than aggressive loading
+    const updatedCache = { ...iconCache }
+    
+    for (let i = 0; i < appsNeedingIcons.length; i += batchSize) {
+      const batch = appsNeedingIcons.slice(i, i + batchSize)
+      
+      const batchPromises = batch.map(async (app) => {
+        if (loadingIcons.has(app.process_name)) return { success: false, processName: app.process_name }
+        
+        // Mark as loading
+        setLoadingIcons(prev => new Set(prev).add(app.process_name))
+        
+        try {
+          console.log(`📱 Regular loading icon for ${app.name}`)
+          const iconData = await getAppIcon(app.process_name)
+          
+          if (iconData) {
+            updatedCache[app.process_name] = iconData
+            setAppIcons(prev => ({ ...prev, [app.pid]: iconData }))
+            console.log(`✅ Regular loaded icon for ${app.name}`)
+            return { success: true, processName: app.process_name, iconData }
+          } else {
+            console.log(`❌ No icon found for ${app.name} (regular)`)
+            return { success: false, processName: app.process_name }
+          }
+        } catch (error) {
+          console.warn(`💥 Regular load failed for ${app.name}:`, error)
+          return { success: false, processName: app.process_name }
+        } finally {
+          // Clear loading state
+          setLoadingIcons(prev => {
+            const newSet = new Set(prev)
+            newSet.delete(app.process_name)
+            return newSet
+          })
+        }
+      })
+      
+      // Wait for this batch to complete
+      await Promise.allSettled(batchPromises)
+      
+      // Longer delay between batches for regular loading
+      if (i + batchSize < appsNeedingIcons.length) {
+        await new Promise(resolve => setTimeout(resolve, 300))
+      }
+    }
+    
+    // Update persistent cache
+    setIconCache(updatedCache)
+    saveIconCache(updatedCache)
+    
+    console.log('🎉 Regular icon loading completed')
+  }
+
+  // Preload icon for a single app (useful for new apps that appear)
+  const preloadSingleIcon = async (app: AppSession) => {
+    if (!isTauri || iconCache[app.process_name] || loadingIcons.has(app.process_name)) {
+      return // Already cached or loading
+    }
+    
+    setLoadingIcons(prev => new Set(prev).add(app.process_name))
+    
+    try {
+      console.log(`🔄 Preloading icon for new app: ${app.name}`)
+      const iconData = await getAppIcon(app.process_name)
+      
+      if (iconData) {
+        const updatedCache = { ...iconCache, [app.process_name]: iconData }
+        setIconCache(updatedCache)
+        saveIconCache(updatedCache)
+        setAppIcons(prev => ({ ...prev, [app.pid]: iconData }))
+        console.log(`✅ Preloaded icon for ${app.name}`)
+      }
+    } catch (error) {
+      console.warn(`Failed to preload icon for ${app.name}:`, error)
+    } finally {
+      setLoadingIcons(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(app.process_name)
+        return newSet
+      })
+    }
+  }
 
   const loadAppCategories = async () => {
     try {
@@ -310,29 +762,129 @@ export default function App() {
     }
   };
 
+  // Clean up old icons from cache (run periodically)
+  const cleanupIconCache = () => {
+    const currentProcessNames = new Set(apps.map(app => app.process_name))
+    const cacheKeys = Object.keys(iconCache)
+    
+    // Remove icons for apps that no longer exist
+    const keysToRemove = cacheKeys.filter(key => !currentProcessNames.has(key))
+    
+    if (keysToRemove.length > 0) {
+      console.log(`🧹 Cleaning up ${keysToRemove.length} unused icons from cache`)
+      const cleanedCache = { ...iconCache }
+      keysToRemove.forEach(key => delete cleanedCache[key])
+      
+      setIconCache(cleanedCache)
+      saveIconCache(cleanedCache)
+    }
+  }
+
+  // Run cache cleanup when apps change
+  useEffect(() => {
+    if (apps.length > 0 && Object.keys(iconCache).length > 0) {
+      // Debounce cleanup to avoid running too frequently
+      const timer = setTimeout(cleanupIconCache, 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [apps, iconCache])
+
+  // Aggressive icon preloading - starts immediately when app opens
+  const aggressiveIconPreload = async () => {
+    if (!isTauri) return
+    
+    console.log('🚀 AGGRESSIVE ICON PRELOAD STARTING...')
+    
+    try {
+      // First get all current audio apps immediately  
+      const currentApps = await listAudioApps()
+      console.log(`📱 Found ${currentApps.length} apps for immediate icon loading`)
+      
+      // Apply any cached icons immediately
+      const immediateIcons: Record<number, string> = {}
+      let immediateCount = 0
+      
+      currentApps.forEach(app => {
+        const cached = iconCache[app.process_name]
+        if (cached) {
+          immediateIcons[app.pid] = cached
+          immediateCount++
+        }
+      })
+      
+      if (immediateCount > 0) {
+        console.log(`⚡ Applied ${immediateCount} cached icons INSTANTLY`)
+        setAppIcons(immediateIcons)
+      }
+      
+      // Then aggressively load missing icons with maximum priority
+      const appsNeedingIcons = currentApps.filter(app => !iconCache[app.process_name])
+      
+      if (appsNeedingIcons.length > 0) {
+        console.log(`🔥 AGGRESSIVE loading ${appsNeedingIcons.length} missing icons with MAX PRIORITY`)
+        
+        // Mark as loading
+        setLoadingIcons(prev => {
+          const newSet = new Set(prev)
+          appsNeedingIcons.forEach(app => newSet.add(app.process_name))
+          return newSet
+        })
+        
+        // Load ALL missing icons in parallel with NO throttling for maximum speed
+        const aggressivePromises = appsNeedingIcons.map(async (app) => {
+          try {
+            const iconData = await getAppIcon(app.process_name)
+            
+            if (iconData) {
+              // Update caches immediately
+              setIconCache(prev => ({ ...prev, [app.process_name]: iconData }))
+              setAppIcons(prev => ({ ...prev, [app.pid]: iconData }))
+              
+              console.log(`🎯 FAST loaded icon for ${app.name}`)
+              return { success: true, processName: app.process_name, iconData }
+            }
+          } catch (error) {
+            console.warn(`⚠️ Fast load failed for ${app.name}:`, error)
+          }
+          return { success: false, processName: app.process_name }
+        })
+        
+        // Wait for all to complete
+        const results = await Promise.allSettled(aggressivePromises)
+        const successCount = results.filter(r => r.status === 'fulfilled' && r.value?.success).length
+        
+        console.log(`🎉 AGGRESSIVE PRELOAD COMPLETE: ${successCount}/${appsNeedingIcons.length} icons loaded`)
+        
+        // Save cache after aggressive loading
+        const updatedCache = { ...iconCache }
+        results.forEach(result => {
+          if (result.status === 'fulfilled' && result.value?.success && result.value.iconData) {
+            updatedCache[result.value.processName] = result.value.iconData
+          }
+        })
+        setIconCache(updatedCache)
+        saveIconCache(updatedCache)
+        
+        // Clear loading state
+        setLoadingIcons(prev => {
+          const newSet = new Set(prev)
+          appsNeedingIcons.forEach(app => newSet.delete(app.process_name))
+          return newSet
+        })
+      } else {
+        console.log('✅ All icons already cached - AGGRESSIVE PRELOAD not needed')
+      }
+    } catch (error) {
+      console.error('💥 AGGRESSIVE PRELOAD FAILED:', error)
+    }
+  }
+
   const outputDevices = useMemo(() => 
     devices.filter(d => d.kind === 'output'), 
     [devices]
   );
 
-  // Debounce volume changes to reduce backend calls
-  const debouncedVolumes = useDebounce(pendingVolumes, 150) // 150ms delay
-
-  // Effect to handle debounced volume updates
-  useEffect(() => {
-    const updateVolumes = async () => {
-      for (const [stream, volume] of Object.entries(debouncedVolumes)) {
-        if (volumes[stream as StreamId] !== volume) {
-          console.log(`Setting volume for ${stream} to ${volume}`);
-          const ok = await setStreamVolume(stream as StreamId, volume);
-          if (ok) {
-            setVolumes(prev => ({ ...prev, [stream as StreamId]: volume }));
-          }
-        }
-      }
-    }
-    updateVolumes()
-  }, [debouncedVolumes, volumes])
+  // Note: Volume updates are now handled live in onVolume() function
 
   const onRoute = async (stream: StreamId, deviceId: string | null) => {
     const ok = await setRoute(stream, deviceId);
@@ -341,9 +893,57 @@ export default function App() {
     }
   };
 
-  // Immediate UI update for volume changes, debounced backend calls
-  const onVolume = (stream: StreamId, volume: number) => {
-    setPendingVolumes(prev => ({ ...prev, [stream]: volume }));
+  // Throttled backend update function (max 10 calls per second)
+  const throttledVolumeUpdate = useThrottle(async (stream: StreamId, volume: number) => {
+    try {
+      // Ensure true 0 for silence and clamp values
+      const clampedVolume = volume <= 0.001 ? 0.0 : Math.min(1.0, Math.max(0.0, volume))
+      
+      console.log(`Live setting volume for ${stream} to ${clampedVolume} (original: ${volume})`);
+      const ok = await setStreamVolume(stream, clampedVolume);
+      if (ok) {
+        setVolumes(prev => ({ ...prev, [stream]: clampedVolume }));
+        console.log(`Volume updated successfully for ${stream}`);
+      } else {
+        console.error(`Failed to update volume for ${stream}`);
+      }
+    } catch (error) {
+      console.error(`Error updating volume for ${stream}:`, error);
+    }
+  }, 100) // 100ms throttle = max 10 updates per second
+
+  // Immediate UI update for volume changes, with live backend updates
+  const onVolume = async (stream: StreamId, volume: number) => {
+    // Don't update volume if stream is muted
+    if (mutedStreams.has(stream)) {
+      console.log(`Blocking volume change for muted stream: ${stream} - attempted value: ${volume}`)
+      return
+    }
+    
+    console.log(`onVolume called for ${stream} with value ${volume}`)
+    
+    const newVolumes = { ...pendingVolumes, [stream]: volume }
+    setPendingVolumes(newVolumes)
+    
+    // Save to localStorage immediately for persistence
+    saveVolumes(newVolumes)
+    
+    // Throttled live backend update for smooth real-time audio
+    throttledVolumeUpdate(stream, volume)
+    
+    // Also ensure the final value is sent immediately if it's 0 (for silence)
+    if (volume <= 0.001) {
+      try {
+        console.log(`Immediate silence setting for ${stream} to 0.0`);
+        const ok = await setStreamVolume(stream, 0.0);
+        if (ok) {
+          setVolumes(prev => ({ ...prev, [stream]: 0.0 }));
+          console.log(`Silence applied immediately for ${stream}`);
+        }
+      } catch (error) {
+        console.error(`Error applying immediate silence for ${stream}:`, error);
+      }
+    }
   };
 
   const onAssign = async (pid: number, value: '' | StreamId | string) => {
@@ -366,6 +966,17 @@ export default function App() {
     try {
       if (value === '') {
         console.log('Clearing app category for pid:', pid)
+        
+        // Reset app volume to 100% when unassigning
+        try {
+          console.log('Resetting app volume to 100% for pid:', pid)
+          await setAppVolume(pid, 1.0)
+          console.log('App volume reset successful')
+        } catch (volumeError) {
+          console.error('Failed to reset app volume:', volumeError)
+          // Continue with unassign even if volume reset fails
+        }
+        
         const ok = await clearAppCategory(pid)
         console.log('Clear category result:', ok)
         if (ok) setAppCategoriesState(prev => { const n = { ...prev }; delete n[pid]; return n })
@@ -421,6 +1032,369 @@ export default function App() {
     setEditingCategory(null)
   }
 
+  // Custom mixer management
+  const addCustomMixer = () => {
+    // Limit to maximum 6 mixers total (3 default + 3 custom)
+    if (customMixers.length >= 3) return
+    
+    const newMixer = {
+      id: `mixer_${Date.now()}`,
+      name: `Mixer ${customMixers.length + 4}`,
+      apps: []
+    }
+    const updatedMixers = [...customMixers, newMixer]
+    setCustomMixers(updatedMixers)
+    saveCustomMixers(updatedMixers)
+    
+    // Initialize volume for new mixer
+    const newVolumes = { ...customMixerVolumes, [newMixer.id]: 0.8 }
+    setCustomMixerVolumes(newVolumes)
+    saveCustomMixerVolumes(newVolumes)
+  }
+
+  const updateMixerName = (mixerId: string, newName: string) => {
+    const updatedMixers = customMixers.map(mixer => 
+      mixer.id === mixerId ? { ...mixer, name: newName } : mixer
+    )
+    setCustomMixers(updatedMixers)
+    saveCustomMixers(updatedMixers)
+    setEditingMixer(null)
+  }
+
+  const deleteMixer = (mixerId: string) => {
+    const updatedMixers = customMixers.filter(mixer => mixer.id !== mixerId)
+    setCustomMixers(updatedMixers)
+    saveCustomMixers(updatedMixers)
+    
+    // Clear apps assigned to this mixer
+    setAppCategoriesState(prev => {
+      const newState = { ...prev }
+      Object.keys(newState).forEach(pid => {
+        if (newState[parseInt(pid)] === mixerId) {
+          delete newState[parseInt(pid)]
+        }
+      })
+      return newState
+    })
+    
+    // Remove volume and route for deleted mixer
+    setCustomMixerVolumes(prev => {
+      const newVolumes = { ...prev }
+      delete newVolumes[mixerId]
+      return newVolumes
+    })
+    setCustomMixerRoutes(prev => {
+      const newRoutes = { ...prev }
+      delete newRoutes[mixerId]
+      return newRoutes
+    })
+    
+    setContextMenu(null)
+  }
+
+  const setCustomMixerVolume = async (mixerId: string, volume: number) => {
+    // Clamp volume between 0 and 1
+    const clampedVolume = Math.min(1.0, Math.max(0.0, volume))
+    
+    // Update state immediately for responsive UI
+    const newVolumes = { ...customMixerVolumes, [mixerId]: clampedVolume }
+    setCustomMixerVolumes(newVolumes)
+    saveCustomMixerVolumes(newVolumes)
+    
+    // Find all apps assigned to this mixer and update their volumes
+    Object.entries(appCategories).forEach(([pid, category]) => {
+      if (category === mixerId) {
+        const app = apps.find(a => a.pid === parseInt(pid))
+        if (app) {
+          // Set individual app volume through the backend
+          // For now, we'll just store the mixer volume locally
+          console.log(`Setting volume for app ${app.name} in mixer ${mixerId} to ${clampedVolume}`)
+        }
+      }
+    })
+  }
+
+  const setCustomMixerRoute = async (mixerId: string, deviceId: string | null) => {
+    // Update state immediately for responsive UI
+    setCustomMixerRoutes(prev => ({ ...prev, [mixerId]: deviceId }))
+    
+    // For custom mixers, we can implement device routing for all apps in the mixer
+    console.log(`Setting route for custom mixer ${mixerId} to device ${deviceId}`)
+    
+    // Find all apps assigned to this mixer and route them to the device
+    Object.entries(appCategories).forEach(([pid, category]) => {
+      if (category === mixerId) {
+        const app = apps.find(a => a.pid === parseInt(pid))
+        if (app) {
+          console.log(`Routing app ${app.name} to device ${deviceId}`)
+          // Here we could implement per-app routing if the backend supports it
+        }
+      }
+    })
+  }
+
+  const handleVolumeEdit = async (streamId: string, value: string) => {
+    // Don't update volume if stream is muted
+    if (mutedStreams.has(streamId)) {
+      console.log(`Ignoring volume edit for muted stream: ${streamId}`)
+      setEditingVolume(null)
+      setTempVolumeInput('')
+      return
+    }
+    
+    const numValue = parseInt(value)
+    if (!isNaN(numValue) && numValue >= 0 && numValue <= 100) {
+      const volume = numValue / 100
+      const newVolumes = { ...pendingVolumes, [streamId]: volume }
+      setPendingVolumes(newVolumes)
+      
+      // Save to localStorage immediately for persistence
+      saveVolumes(newVolumes)
+      
+      // Live backend update for immediate audio response
+      try {
+        // Ensure true 0 for silence and clamp values
+        const clampedVolume = volume <= 0.001 ? 0.0 : Math.min(1.0, Math.max(0.0, volume))
+        
+        console.log(`Live setting volume for ${streamId} to ${clampedVolume} (original: ${volume})`);
+        const ok = await setStreamVolume(streamId as StreamId, clampedVolume);
+        if (ok) {
+          setVolumes(prev => ({ ...prev, [streamId as StreamId]: clampedVolume }));
+          console.log(`Volume updated successfully for ${streamId}`);
+        } else {
+          console.error(`Failed to update volume for ${streamId}`);
+        }
+      } catch (error) {
+        console.error(`Error updating volume for ${streamId}:`, error);
+      }
+    }
+    setEditingVolume(null)
+    setTempVolumeInput('')
+  }
+
+  const startVolumeEdit = (streamId: string, currentVolume: number) => {
+    setEditingVolume(streamId)
+    setTempVolumeInput(Math.round(currentVolume * 100).toString())
+  }
+
+  const toggleMute = async (streamId: string) => {
+    const isMuted = mutedStreams.has(streamId)
+    
+    console.log(`=== TOGGLE MUTE ${streamId} ===`)
+    console.log(`Current state: ${isMuted ? 'MUTED' : 'UNMUTED'}`)
+    console.log(`Current UI volume: ${(pendingVolumes as any)[streamId]} (type: ${typeof (pendingVolumes as any)[streamId]})`)
+    console.log(`Saved muted volume: ${mutedVolumes[streamId]} (type: ${typeof mutedVolumes[streamId]})`)
+    console.log(`Current volumes state:`, volumes)
+    console.log(`Current pendingVolumes state:`, pendingVolumes)
+    console.log(`Current mutedVolumes state:`, mutedVolumes)
+    
+    if (isMuted) {
+      // Unmuting - restore original volume
+      let originalVolume = mutedVolumes[streamId]
+      
+      // Fallback logic if no saved volume
+      if (originalVolume === undefined || originalVolume === null) {
+        originalVolume = volumes[streamId as StreamId] || 0.5
+        console.log(`⚠️ No saved muted volume, using fallback: ${originalVolume}`)
+      }
+      
+      // Ensure volume is a valid number
+      originalVolume = Number(originalVolume)
+      if (isNaN(originalVolume) || originalVolume < 0 || originalVolume > 1) {
+        originalVolume = 0.5
+        console.log(`⚠️ Invalid volume value, using 0.5`)
+      }
+      
+      console.log(`UNMUTING: Restoring volume to ${originalVolume}`)
+      
+      // Update mute state first - this is critical!
+      const newMutedStreams = new Set(mutedStreams)
+      newMutedStreams.delete(streamId)
+      console.log(`Removing ${streamId} from muted streams`)
+      
+      // Remove from muted volumes
+      const newMutedVolumes = { ...mutedVolumes }
+      delete newMutedVolumes[streamId]
+      console.log(`Removing saved volume for ${streamId}`)
+      
+      // Apply state changes immediately
+      setMutedStreams(newMutedStreams)
+      setMutedVolumes(newMutedVolumes)
+      saveMutedStreams(newMutedStreams)
+      
+      // Wait a moment for state to update
+      await new Promise(resolve => setTimeout(resolve, 50))
+      
+      // Restore UI volume
+      console.log(`Setting UI volume to ${originalVolume}`)
+      const newVolumes = { ...pendingVolumes, [streamId]: originalVolume }
+      setPendingVolumes(newVolumes)
+      saveVolumes(newVolumes)
+      
+      // Restore backend volume directly (not throttled)
+      if (isTauri) {
+        try {
+          console.log(`Setting backend volume for ${streamId} to ${originalVolume}`)
+          const ok = await setStreamVolume(streamId as StreamId, originalVolume)
+          if (ok) {
+            setVolumes(prev => ({ ...prev, [streamId as StreamId]: originalVolume }))
+            console.log(`✅ Backend volume restored successfully for ${streamId}`)
+          } else {
+            console.error(`❌ Failed to set backend volume for ${streamId}`)
+          }
+        } catch (error) {
+          console.error(`❌ Error restoring backend volume for ${streamId}:`, error)
+        }
+      }
+    } else {
+      // Muting - save current volume and set to 0
+      let currentVolume = (pendingVolumes as any)[streamId]
+      
+      // Fallback if no pending volume
+      if (currentVolume === undefined || currentVolume === null) {
+        currentVolume = volumes[streamId as StreamId] || 0.5
+        console.log(`⚠️ No pending volume, using volumes state: ${currentVolume}`)
+      }
+      
+      // Ensure volume is a valid number
+      currentVolume = Number(currentVolume)
+      if (isNaN(currentVolume) || currentVolume < 0 || currentVolume > 1) {
+        currentVolume = 0.5
+        console.log(`⚠️ Invalid volume value, using 0.5`)
+      }
+      
+      console.log(`MUTING: Saving current volume ${currentVolume}`)
+      
+      // Save current volume first
+      const newMutedVolumes = { ...mutedVolumes, [streamId]: currentVolume }
+      setMutedVolumes(newMutedVolumes)
+      console.log(`Saved volume ${currentVolume} for ${streamId}`)
+      
+      // Update mute state
+      const newMutedStreams = new Set(mutedStreams)
+      newMutedStreams.add(streamId)
+      setMutedStreams(newMutedStreams)
+      saveMutedStreams(newMutedStreams)
+      console.log(`Added ${streamId} to muted streams`)
+      
+      // Set UI volume to 0
+      const newVolumes = { ...pendingVolumes, [streamId]: 0 }
+      setPendingVolumes(newVolumes)
+      saveVolumes(newVolumes)
+      console.log(`Set UI volume to 0`)
+      
+      // Set backend volume to 0 directly (not throttled)
+      if (isTauri) {
+        try {
+          console.log(`Setting backend volume for ${streamId} to 0`)
+          const ok = await setStreamVolume(streamId as StreamId, 0)
+          if (ok) {
+            setVolumes(prev => ({ ...prev, [streamId as StreamId]: 0 }))
+            console.log(`✅ Backend volume muted successfully for ${streamId}`)
+          } else {
+            console.error(`❌ Failed to mute backend volume for ${streamId}`)
+          }
+        } catch (error) {
+          console.error(`❌ Error muting backend volume for ${streamId}:`, error)
+        }
+      }
+    }
+    
+    console.log(`=== END TOGGLE MUTE ${streamId} ===`)
+    
+    // Mute/unmute all apps in this stream
+    if (isTauri) {
+      try {
+        // Check if it's a custom mixer
+        const mixer = customMixers.find(m => m.id === streamId)
+        if (mixer) {
+          // Mute all apps in the custom mixer
+          for (const appPid of mixer.apps) {
+            const app = apps.find(a => a.pid === appPid)
+            if (app) {
+              await setAppVolume(app.pid, isMuted ? app.volume : 0.0)
+              console.log(`${isMuted ? 'Unmuted' : 'Muted'} app ${app.name} (PID: ${app.pid})`)
+            }
+          }
+        } else {
+          // It's a standard stream - mute all apps assigned to this stream
+          const appsInStream = apps.filter(app => appCategories[app.pid] === streamId)
+          for (const app of appsInStream) {
+            await setAppVolume(app.pid, isMuted ? app.volume : 0.0)
+            console.log(`${isMuted ? 'Unmuted' : 'Muted'} app ${app.name} (PID: ${app.pid})`)
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to ${isMuted ? 'unmute' : 'mute'} apps in stream ${streamId}:`, error)
+      }
+    }
+  }
+
+  // Component to render app icons with optimized loading
+  const AppIcon: React.FC<{ app: AppSession }> = ({ app }) => {
+    const iconData = appIcons[app.pid];
+    const cleanName = app.name.replace(/\.exe$/i, '');
+    const isLoading = loadingIcons.has(app.process_name);
+    
+    if (iconData) {
+      return (
+        <img 
+          src={iconData}
+          alt={cleanName}
+          className="wavelink-app-icon-img"
+          onError={() => {
+            console.warn(`Icon failed to load for ${app.name}, removing from cache`)
+            // Remove failed icon from both caches
+            setAppIcons(prev => {
+              const newIcons = { ...prev };
+              delete newIcons[app.pid];
+              return newIcons;
+            });
+            setIconCache(prev => {
+              const newCache = { ...prev };
+              delete newCache[app.process_name];
+              saveIconCache(newCache);
+              return newCache;
+            });
+          }}
+          onLoad={() => {
+            // Icon loaded successfully - no action needed
+          }}
+        />
+      );
+    }
+    
+    // Show loading indicator or fallback letter
+    if (isLoading) {
+      return (
+        <div className="wavelink-app-icon-letter wavelink-app-icon-loading">
+          <div className="wavelink-loading-spinner"></div>
+        </div>
+      );
+    }
+    
+    // Fallback to first letter if no icon available
+    return (
+      <div 
+        className="wavelink-app-icon-letter"
+        onClick={() => {
+          // Allow manual retry by clicking the letter icon
+          if (!loadingIcons.has(app.process_name)) {
+            console.log(`Manual retry icon load for ${app.name}`)
+            preloadSingleIcon(app)
+          }
+        }}
+        title={`Click to retry loading icon for ${cleanName}`}
+      >
+        {cleanName.charAt(0).toUpperCase()}
+      </div>
+    );
+  };
+
+  const assignAppToMixer = (appPid: number, mixerId: string) => {
+    setAppCategoriesState(prev => ({ ...prev, [appPid]: mixerId }))
+  }
+
   const getRandomCategoryColor = () => {
     const colors = [
       'from-indigo-500 to-purple-600',
@@ -446,6 +1420,9 @@ export default function App() {
     setDraggedApp(app)
     setIsDragging(true)
     
+    // Prevent event bubbling to avoid conflicts with container events
+    e.stopPropagation()
+    
     if (isTauri) {
       // In Tauri, use a simpler approach
       e.dataTransfer.effectAllowed = 'move'
@@ -458,66 +1435,73 @@ export default function App() {
       e.dataTransfer.setData('application/json', JSON.stringify(app))
     }
     
-    // Add global dragging state
-    document.body.classList.add('dragging-active')
-    
     console.log('Drag data set, effectAllowed: move')
   }
 
+  const [dragTarget, setDragTarget] = useState<string | null>(null)
+
   const handleDragEnd = (e: React.DragEvent) => {
     console.log('Drag ended - cleaning up')
+    e.stopPropagation()
+    
     setDraggedApp(null)
+    setDragTarget(null)
     setIsDragging(false)
-    // Remove global dragging state
-    document.body.classList.remove('dragging-active')
   }
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
-    e.stopPropagation()
-    // This is crucial - without this, the drop zones won't accept drops
     e.dataTransfer.dropEffect = 'move'
-    console.log('Drag over - dropEffect set to move, isTauri:', isTauri)
   }
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    console.log('Drag enter')
-    // Find the drop zone container to ensure consistent styling
-    const dropZone = (e.currentTarget as HTMLElement).closest('.drop-zone') || e.currentTarget
-    dropZone.classList.add('drag-over')
+    // Get the stream from data attribute
+    const target = e.currentTarget as HTMLElement
+    const stream = target.dataset.stream
+    if (stream && draggedApp) {
+      setDragTarget(stream)
+    }
   }
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    console.log('Drag leave')
-    
-    // Only remove hover effect if we're actually leaving the drop zone
-    // Check if the related target is still within this drop zone
-    const dropZone = e.currentTarget as HTMLElement
-    const relatedTarget = e.relatedTarget as HTMLElement
-    
-    if (!relatedTarget || !dropZone.contains(relatedTarget)) {
-      dropZone.classList.remove('drag-over')
+    // Only clear if we're actually leaving the container
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragTarget(null)
     }
   }
 
   const handleDrop = (e: React.DragEvent, categoryId: string) => {
     e.preventDefault()
-    e.stopPropagation()
-    e.currentTarget.classList.remove('drag-over')
+    setDragTarget(null)
+    
     console.log('Drop attempted on category:', categoryId, 'with app:', draggedApp?.name)
+    
     if (draggedApp) {
-      console.log('Valid drop - assigning app to category')
-      onAssign(draggedApp.pid, categoryId).then(() => {
-        console.log('Assignment completed')
-        setDraggedApp(null)
-      }).catch(err => {
-        console.error('Assignment failed:', err)
-        setDraggedApp(null)
-      })
+      if (categoryId === 'remove') {
+        // Remove app from all categories/mixers
+        console.log('Removing app from all mixers')
+        onAssign(draggedApp.pid, '').then(() => {
+          console.log('App removed from all mixers')
+          setDraggedApp(null)
+        }).catch((err: any) => {
+          console.error('Remove failed:', err)
+          setDraggedApp(null)
+        })
+      } else {
+        // Assign app to specific mixer/category
+        console.log('Valid drop - assigning app to category')
+        onAssign(draggedApp.pid, categoryId).then(() => {
+          console.log('Assignment completed')
+          setDraggedApp(null)
+        }).catch((err: any) => {
+          console.error('Assignment failed:', err)
+          setDraggedApp(null)
+        })
+      }
     } else {
       console.log('No dragged app found')
       setDraggedApp(null)
@@ -593,25 +1577,42 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-white">
-      {/* Background pattern */}
-      <div className="fixed inset-0 opacity-5">
-        <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent"></div>
-      </div>
-      
-      <div className="relative z-10 p-6">
+    <>
+      {/* Loading Screen */}
+      {isLoading && (
+        <div className="wavelink-loading-screen">
+          <div className="wavelink-loading-content">
+            <div className="wavelink-loading-logo">
+              WaveLink
+            </div>
+            <div className="wavelink-loading-spinner-large"></div>
+            <div className="wavelink-loading-text">
+              {loadingStage}
+            </div>
+            <div className="wavelink-loading-dots">
+              <div className="wavelink-loading-dot"></div>
+              <div className="wavelink-loading-dot"></div>
+              <div className="wavelink-loading-dot"></div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main App */}
+      <div className="min-h-screen text-white" style={{ background: 'var(--wavelink-bg)' }}>
+      <div className="p-6">
         <header className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-4">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-lg">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center shadow-lg" style={{ background: 'var(--wavelink-green)' }}>
               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.464 15.536a5 5 0 010-7.072m-2.828 9.9a9 9 0 010-12.728M12 12h.01" />
               </svg>
             </div>
             <div>
-              <h1 className="text-3xl font-bold text-white">
-                Audio Mixer
+              <h1 className="text-3xl font-bold" style={{ color: 'var(--wavelink-text)' }}>
+                🌊 Wave Link
               </h1>
-              <p className="text-gray-400 text-sm">Professional Windows Audio Control</p>
+              <p className="text-sm" style={{ color: 'var(--wavelink-text-muted)' }}>Professional Windows Audio Control</p>
             </div>
           </div>
           
@@ -644,269 +1645,489 @@ export default function App() {
           </div>
         </header>
 
-        <main className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Audio Streams */}
-          <section className="lg:col-span-2 space-y-4">
-            <div className="flex items-center gap-3 mb-4">
-              <h2 className="text-xl font-semibold text-gray-200">Audio Streams</h2>
-              <div className="h-px bg-gradient-to-r from-blue-500/50 to-transparent flex-1"></div>
-            </div>
-            <div className="space-y-4">
-              {defaultStreams.map((stream, index) => (
-                <div key={stream}>
-                  <StreamCard
-                    stream={stream}
-                    devices={outputDevices}
-                    route={routes[stream]}
-                    volume={pendingVolumes[stream]}
-                    onRoute={onRoute}
-                    onVolume={onVolume}
-                  />
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* App Categories */}
-          <section className="space-y-4">
-            <div className="flex items-center gap-3 mb-4">
-              <h2 className="text-xl font-semibold text-gray-200">App Categories</h2>
-              <div className="h-px bg-gradient-to-r from-blue-500/50 to-transparent flex-1"></div>
+        <main className="space-y-6">
+          {/* WaveLink-style Mixer Section */}
+          <section>
+            <div className="flex items-center gap-3 mb-6">
+              <h2 className="text-xl font-semibold" style={{ color: 'var(--wavelink-text)' }}>Mix Editor</h2>
+              <div className="h-px bg-gradient-to-r from-green-500/50 to-transparent flex-1"></div>
             </div>
             
-            <div className="panel p-4">
-              {/* Categories */}
-              <div className="mb-6">
-                {/* Add Category Section */}
-                {categories.length < 8 && (
-                  <div className="flex items-center gap-2 mb-4">
-                    <input
-                      type="text"
-                      placeholder="New category name..."
-                      value={newCategoryName}
-                      onChange={(e) => setNewCategoryName(e.target.value)}
-                      className="flex-1 bg-gray-800/80 border border-white/10 rounded-lg px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
-                      onKeyPress={(e) => e.key === 'Enter' && addCategory()}
-                      maxLength={20}
-                    />
-                    <button 
-                      onClick={addCategory} 
-                      disabled={!newCategoryName.trim()}
-                      className="btn btn-accent text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            <div className="wavelink-channels-grid">
+              {/* Standard Audio Mixers */}
+              {defaultStreams.map((stream, index) => (
+                <div 
+                  key={stream} 
+                  className={`wavelink-channel ${mutedStreams.has(stream) ? 'muted' : ''}`}
+                >
+                  {/* Channel Header with Device Selector */}
+                  <div className="wavelink-channel-header">
+                    <div 
+                      className="wavelink-channel-name"
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                      </svg>
-                      Add
+                      {streamNames[stream]}
+                    </div>
+                    
+                    {/* Device Dropdown */}
+                    <div className={`wavelink-device-dropdown ${openDeviceDropdown === stream ? 'open' : ''}`} data-stream={stream}>
+                      <button 
+                        className="wavelink-device-button"
+                        data-stream={stream}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          console.log('Device dropdown clicked for stream:', stream)
+                          setOpenDeviceDropdown(openDeviceDropdown === stream ? null : stream)
+                        }}
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                        <span>{routes[stream] ? outputDevices.find(d => d.id === routes[stream])?.name.slice(0, 8) + '...' : 'Default'}</span>
+                      </button>
+                      
+                      {openDeviceDropdown === stream && (
+                        <div 
+                          className="wavelink-modal-overlay"
+                          onClick={() => setOpenDeviceDropdown(null)}
+                        >
+                          <div 
+                            className="wavelink-modal"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="wavelink-modal-header">
+                              <div className="wavelink-modal-title">
+                                <div className="text-sm font-semibold">Output Device</div>
+                                <div className="text-xs opacity-70">
+                                  {stream.charAt(0).toUpperCase() + stream.slice(1)} Stream
+                                </div>
+                              </div>
+                              <button 
+                                className="wavelink-modal-close"
+                                onClick={() => setOpenDeviceDropdown(null)}
+                              >
+                                ×
+                              </button>
+                            </div>
+                            
+                            <div className="wavelink-modal-content">
+                              <button
+                                onClick={() => {
+                                  console.log('Selected default device for stream:', stream)
+                                  onRoute(stream, null)
+                                  setOpenDeviceDropdown(null)
+                                }}
+                                className={`wavelink-device-option ${!routes[stream] ? 'selected' : ''}`}
+                              >
+                                <div className="wavelink-device-name">Default Device</div>
+                                <div className="wavelink-device-info">System default audio output</div>
+                              </button>
+                              
+                              {outputDevices.map(device => (
+                                <button
+                                  key={device.id}
+                                  onClick={() => {
+                                    console.log('Selected device for stream:', stream, 'device:', device.name)
+                                    onRoute(stream, device.id)
+                                    setOpenDeviceDropdown(null)
+                                  }}
+                                  className={`wavelink-device-option ${routes[stream] === device.id ? 'selected' : ''}`}
+                                >
+                                  <div className="wavelink-device-name">{device.name}</div>
+                                  <div className="wavelink-device-info">
+                                    {device.backend} {device.is_default ? '• System Default' : ''}
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* App Container */}
+                    <div 
+                      className={`wavelink-app-container ${dragTarget === stream ? 'drag-highlight' : ''}`}
+                      data-stream={stream}
+                      onDragOver={handleDragOver}
+                      onDragEnter={handleDragEnter}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDrop(e, stream)}
+                    >
+                      {/* Show apps assigned to this stream */}
+                      {(() => {
+                        const assignedApps = Object.entries(appCategories)
+                          .filter(([pid, category]) => 
+                            typeof category === 'string' ? category === stream : category === stream
+                          )
+                          .map(([pid]) => {
+                            const app = apps.find(a => a.pid === parseInt(pid))
+                            return app ? (
+                              <div 
+                                key={pid} 
+                                className="wavelink-app-icon" 
+                                title={app.name}
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, app)}
+                                onDragEnd={handleDragEnd}
+                              >
+                                <AppIcon app={app} />
+                              </div>
+                            ) : null
+                          })
+                        
+                        console.log(`Apps for stream ${stream}:`, assignedApps.length, 'appCategories:', appCategories)
+                        return assignedApps
+                      })()}
+                    </div>
+                  </div>
+                  
+                  {/* Vertical Slider Section - Level links, Slider rechts */}
+                  <div className="wavelink-slider-container">
+                    {/* Level Meter - Links */}
+                    <div className="wavelink-level">
+                      <div 
+                        className="wavelink-level-fill" 
+                        style={{ height: `${(audioLevels[stream] || 0) * 100}%` }}
+                      ></div>
+                    </div>
+                    
+                    {/* Volume Slider - Rechts */}
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={pendingVolumes[stream] || 0}
+                      onChange={(e) => onVolume(stream, parseFloat(e.target.value))}
+                      className={`wavelink-slider ${mutedStreams.has(stream) ? 'disabled' : ''}`}
+                      disabled={mutedStreams.has(stream)}
+                    />
+                  </div>
+                  
+                  {/* Volume Display */}
+                  {/* Volume Display */}
+                  <div className="wavelink-volume-display">
+                    {editingVolume === stream ? (
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={tempVolumeInput}
+                        onChange={(e) => setTempVolumeInput(e.target.value)}
+                        onBlur={() => handleVolumeEdit(stream, tempVolumeInput)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleVolumeEdit(stream, tempVolumeInput)
+                          } else if (e.key === 'Escape') {
+                            setEditingVolume(null)
+                            setTempVolumeInput('')
+                          }
+                        }}
+                        className="wavelink-volume-input"
+                        autoFocus
+                      />
+                    ) : (
+                      <span 
+                        onClick={() => startVolumeEdit(stream, pendingVolumes[stream] || 0)}
+                        className="wavelink-volume-text"
+                      >
+                        {Math.round((pendingVolumes[stream] || 0) * 100)}%
+                      </span>
+                    )}
+                  </div>
+                  
+                  {/* Channel Controls */}
+                  <div className="wavelink-channel-buttons">
+                    <button 
+                      className={`wavelink-btn-small ${mutedStreams.has(stream) ? 'muted' : ''}`}
+                      onClick={() => toggleMute(stream)}
+                    >
+                      {mutedStreams.has(stream) ? '🔇' : '🔊'}
                     </button>
                   </div>
-                )}
-                
-                {categories.length >= 8 && (
-                  <div className="mb-4 p-2 bg-yellow-900/20 border border-yellow-600/30 rounded-lg">
-                    <p className="text-xs text-yellow-400">Maximum of 8 categories reached</p>
-                  </div>
-                )}
+                </div>
+              ))}
 
-                <div className="space-y-3">
-                {categories.map(category => (
-                  <div
-                    key={category.id}
-                    data-category={category.id}
-                    className="drop-zone p-4 rounded-lg bg-gray-800/50 border-2 border-dashed border-gray-600 hover:border-blue-400 transition-colors min-h-[80px] flex items-center"
-                    onDragOver={(e) => {
-                      console.log(`DragOver on category: ${category.id}`)
-                      handleDragOver(e)
-                    }}
-                    onDragEnter={(e) => {
-                      console.log(`DragEnter on category: ${category.id}`)
-                      handleDragEnter(e)
-                    }}
-                    onDragLeave={(e) => {
-                      console.log(`DragLeave on category: ${category.id}`)
-                      handleDragLeave(e)
-                    }}
-                    onDrop={(e) => {
-                      console.log(`Drop on category: ${category.id}`)
-                      handleDrop(e, category.id)
-                    }}
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${category.color} flex items-center justify-center text-sm`}>
-                          {category.icon}
-                        </div>
-                        {editingCategory === category.id ? (
-                          <input
-                            type="text"
-                            defaultValue={category.name}
-                            className="bg-gray-700 border border-gray-500 rounded px-2 py-1 text-sm"
-                            onBlur={(e) => updateCategoryName(category.id, e.target.value)}
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                updateCategoryName(category.id, (e.target as HTMLInputElement).value)
-                              }
-                            }}
-                            autoFocus
-                          />
-                        ) : (
-                          <span 
-                            className="font-medium cursor-pointer hover:text-blue-400"
-                            onClick={() => setEditingCategory(category.id)}
-                          >
-                            {category.name}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-400">
-                          {Object.values(appCategories).filter(cat => cat === category.id).length} apps
+              {/* Custom Mixers */}
+              {customMixers.map((mixer) => (
+                <div 
+                  key={mixer.id} 
+                  className={`wavelink-channel ${mutedStreams.has(mixer.id) ? 'muted' : ''}`}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setContextMenu({ x: e.clientX, y: e.clientY, mixerId: mixer.id })
+                  }}
+                >
+                  <div className="wavelink-channel-header">
+                    <div 
+                      className={`wavelink-channel-name ${editingMixer === mixer.id ? 'editing' : ''}`}
+                      onDoubleClick={() => setEditingMixer(mixer.id)}
+                    >
+                      {editingMixer === mixer.id ? (
+                        <input
+                          type="text"
+                          defaultValue={mixer.name}
+                          className="bg-transparent border-none outline-none text-center w-full"
+                          onBlur={(e) => updateMixerName(mixer.id, e.target.value)}
+                          onKeyPress={(e) => {
+                            if (e.key === 'Enter') {
+                              updateMixerName(mixer.id, (e.target as HTMLInputElement).value)
+                            }
+                          }}
+                          autoFocus
+                        />
+                      ) : (
+                        mixer.name
+                      )}
+                    </div>
+                    
+                    {/* Device Dropdown for custom mixers */}
+                    <div className={`wavelink-device-dropdown ${openDeviceDropdown === mixer.id ? 'open' : ''}`} data-mixer={mixer.id}>
+                      <button 
+                        className="wavelink-device-button"
+                        data-mixer={mixer.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          console.log('Custom mixer device dropdown clicked for mixer:', mixer.id)
+                          setOpenDeviceDropdown(openDeviceDropdown === mixer.id ? null : mixer.id)
+                        }}
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                        <span>
+                          {customMixerRoutes[mixer.id] 
+                            ? (outputDevices.find(d => d.id === customMixerRoutes[mixer.id])?.name.slice(0, 8) + '...' || 'Unknown')
+                            : 'Default'
+                          }
                         </span>
-                        {!['game', 'voice', 'music'].includes(category.id) && (
-                          <button
-                            onClick={() => removeCategory(category.id)}
-                            className="text-red-400 hover:text-red-300 p-1"
-                            title="Delete category"
+                      </button>
+                      
+                      {openDeviceDropdown === mixer.id && (
+                        <div className="wavelink-device-menu">
+                          <div 
+                            className={`wavelink-device-item ${!customMixerRoutes[mixer.id] ? 'selected' : ''}`}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              console.log('Setting custom mixer route to default for mixer:', mixer.id)
+                              setCustomMixerRoute(mixer.id, null)
+                              setOpenDeviceDropdown(null)
+                            }}
                           >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
+                            Default Device
+                          </div>
+                          {outputDevices.map(device => (
+                            <div 
+                              key={device.id} 
+                              className={`wavelink-device-item ${customMixerRoutes[mixer.id] === device.id ? 'selected' : ''}`}
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                console.log('Setting custom mixer route to device:', device.name, 'for mixer:', mixer.id)
+                                setCustomMixerRoute(mixer.id, device.id)
+                                setOpenDeviceDropdown(null)
+                              }}
+                            >
+                              {device.name}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* App Container for Custom Mixer */}
+                    <div 
+                      className={`wavelink-app-container ${dragTarget === mixer.id ? 'drag-highlight' : ''}`}
+                      data-stream={mixer.id}
+                      onDragOver={handleDragOver}
+                      onDragEnter={handleDragEnter}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDrop(e, mixer.id)}
+                    >
+                      {/* Show apps assigned to this custom mixer */}
+                      {Object.entries(appCategories)
+                        .filter(([pid, category]) => 
+                          typeof category === 'string' ? category === mixer.id : category === mixer.id
+                        )
+                        .map(([pid]) => {
+                          const app = apps.find(a => a.pid === parseInt(pid))
+                          return app ? (
+                            <div 
+                              key={pid} 
+                              className="wavelink-app-icon" 
+                              title={app.name}
+                              draggable
+                              onDragStart={(e) => handleDragStart(e, app)}
+                              onDragEnd={handleDragEnd}
+                            >
+                              <AppIcon app={app} />
+                            </div>
+                          ) : null
+                        })}
                     </div>
                   </div>
-                ))}
-                </div>
-              </div>
-
-              {/* Unassigned Drop Zone */}
-              <div
-                data-category="unassigned"
-                className="drop-zone p-4 rounded-lg bg-gray-900/50 border-2 border-dashed border-gray-600 hover:border-red-400 transition-colors min-h-[80px] flex items-center"
-                onDragOver={(e) => {
-                  console.log('DragOver on unassigned zone')
-                  handleDragOver(e)
-                }}
-                onDragEnter={(e) => {
-                  console.log('DragEnter on unassigned zone')
-                  handleDragEnter(e)
-                }}
-                onDragLeave={(e) => {
-                  console.log('DragLeave on unassigned zone')
-                  handleDragLeave(e)
-                }}
-                onDrop={(e) => {
-                  console.log('Drop on unassigned zone')
-                  handleDropUnassigned(e)
-                }}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-gray-700 flex items-center justify-center text-sm">
-                    ❌
+                  
+                  <div className="wavelink-slider-container">
+                    <div className="wavelink-level">
+                      <div 
+                        className="wavelink-level-fill" 
+                        style={{ height: `${(audioLevels[mixer.id] || 0) * 100}%` }}
+                      ></div>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={customMixerVolumes[mixer.id] || 0.8}
+                      onChange={(e) => setCustomMixerVolume(mixer.id, parseFloat(e.target.value))}
+                      className={`wavelink-slider ${mutedStreams.has(mixer.id) ? 'disabled' : ''}`}
+                      disabled={mutedStreams.has(mixer.id)}
+                    />
                   </div>
-                  <span className="font-medium text-gray-400">Unassigned</span>
-                  <span className="text-xs text-gray-500">
-                    {apps.filter(app => !appCategories[app.pid]).length} apps
+                  
+                  <div className="wavelink-volume-display">{Math.round((customMixerVolumes[mixer.id] || 0.8) * 100)}%</div>
+                  
+                  <div className="wavelink-channel-buttons">
+                    <button 
+                      className={`wavelink-btn-small ${mutedStreams.has(mixer.id) ? 'muted' : ''}`}
+                      onClick={() => toggleMute(mixer.id)}
+                    >
+                      {mutedStreams.has(mixer.id) ? '🔇' : '🔊'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {/* Add Mixer Button - Only show if less than 3 custom mixers */}
+              {customMixers.length < 3 && (
+                <div className="wavelink-add-mixer" onClick={addCustomMixer}>
+                  <div className="wavelink-add-icon">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                  </div>
+                  <span style={{ color: 'var(--wavelink-text-muted)', fontSize: '12px', fontWeight: '500' }}>
+                    Add Audio Mixer
                   </span>
                 </div>
-              </div>
+              )}
 
-              {/* Draggable Apps */}
-              <div>
-                <h3 className="text-sm font-medium text-gray-300 mb-3 mt-6">Active Applications ({apps.length})</h3>
-                
-                {/* Test App for Debugging */}
-                {apps.length === 0 && (
-                  <div className="mb-4 p-2 bg-yellow-900/20 border border-yellow-600/30 rounded-lg">
-                    <p className="text-xs text-yellow-400 mb-2">Debug: No apps detected. Testing with mock app:</p>
-                    <div
-                      draggable={true}
-                      onDragStart={(e) => handleDragStart(e, { pid: 12345, name: "Test App", volume: 0.8, muted: false })}
-                      onDragEnd={handleDragEnd}
-                      onMouseDown={(e) => isTauri && handleMouseDown(e, { pid: 12345, name: "Test App", volume: 0.8, muted: false })}
-                      className="app-card p-3 hover:bg-gray-700/50 transition-colors bg-gray-800/50 rounded"
-                      style={{ cursor: isTauri ? 'pointer' : 'grab' }}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="w-6 h-6 rounded bg-gray-600 flex items-center justify-center text-xs">
-                            🎵
-                          </div>
-                          <div>
-                            <div className="text-sm font-medium text-gray-200">Test Audio App</div>
-                            <div className="text-xs text-gray-500">PID 12345</div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-yellow-400">Try dragging me!</span>
-                          {appCategories[12345] && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-gray-400">→</span>
-                              <div className={`w-6 h-6 rounded bg-gradient-to-br ${categories.find(cat => cat.id === appCategories[12345])?.color} flex items-center justify-center text-xs`}>
-                                {categories.find(cat => cat.id === appCategories[12345])?.icon}
-                              </div>
-                              <span className="text-xs text-gray-400">{categories.find(cat => cat.id === appCategories[12345])?.name}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+              {/* Apps Container */}
+              <div className="wavelink-apps-container">
+                <div className="wavelink-apps-header">
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-lg flex items-center justify-center text-sm" style={{ backgroundColor: 'var(--wavelink-border)' }}>
+                      📱
                     </div>
+                    <h3 className="font-medium" style={{ color: 'var(--wavelink-text)' }}>
+                      Unassigned Apps ({apps.filter(app => !appCategories[app.pid]).length})
+                    </h3>
                   </div>
-                )}
+                  <button 
+                    className="wavelink-clear-all-btn"
+                    onClick={async () => {
+                      console.log('Clearing all app assignments and resetting volumes')
+                      // Clear all apps from all mixers and reset their volumes
+                      for (const app of apps) {
+                        if (appCategories[app.pid]) {
+                          try {
+                            // Reset volume to 100% first
+                            await setAppVolume(app.pid, 1.0)
+                            console.log(`Reset volume for ${app.name}`)
+                          } catch (volumeError) {
+                            console.error(`Failed to reset volume for ${app.name}:`, volumeError)
+                          }
+                          // Then clear assignment
+                          await onAssign(app.pid, '')
+                        }
+                      }
+                    }}
+                    title="Clear all app assignments and reset volumes to 100%"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1-1H9a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
                 
-                <div className="space-y-2 max-h-[40vh] overflow-auto">
-                  {apps.map(app => {
-                    const assignedCategory = categories.find(cat => cat.id === appCategories[app.pid])
+                <div className="wavelink-apps-list">
+                  {apps.filter(app => !appCategories[app.pid]).map(app => {
+                    // Remove .exe from app name
+                    const cleanName = app.name.replace(/\.exe$/i, '')
+                    
                     return (
                       <div
                         key={app.pid}
-                        draggable={true}
+                        draggable
                         onDragStart={(e) => handleDragStart(e, app)}
                         onDragEnd={handleDragEnd}
-                        onMouseDown={(e) => isTauri && handleMouseDown(e, app)}
-                        className="app-card p-3 hover:bg-gray-700/50 transition-colors"
-                        style={{ cursor: isTauri ? 'pointer' : 'grab' }}
+                        className="wavelink-app-item"
                       >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <div className="w-6 h-6 rounded bg-gray-600 flex items-center justify-center text-xs">
-                              📱
-                            </div>
-                            <div>
-                              <div className="text-sm font-medium text-gray-200 truncate max-w-[200px]">{app.name}</div>
-                              <div className="text-xs text-gray-500">PID {app.pid}</div>
-                            </div>
-                          </div>
-                          {assignedCategory && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-gray-400">→</span>
-                              <div className={`w-6 h-6 rounded bg-gradient-to-br ${assignedCategory.color} flex items-center justify-center text-xs`}>
-                                {assignedCategory.icon}
-                              </div>
-                              <span className="text-xs text-gray-400">{assignedCategory.name}</span>
-                            </div>
-                          )}
+                        <div className="wavelink-app-icon">
+                          <AppIcon app={app} />
+                        </div>
+                        <div className="wavelink-app-info">
+                          <div className="wavelink-app-name">{cleanName}</div>
                         </div>
                       </div>
                     )
                   })}
-                  {apps.length === 0 && (
+                  
+                  {apps.filter(app => !appCategories[app.pid]).length === 0 && (
                     <div className="text-center py-8">
-                      <div className="w-16 h-16 mx-auto mb-3 rounded-full bg-gray-800/50 flex items-center justify-center">
-                        <svg className="w-8 h-8 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <div className="w-12 h-12 mx-auto mb-3 rounded-full flex items-center justify-center" style={{ backgroundColor: 'var(--wavelink-border)' }}>
+                        <svg className="w-6 h-6" style={{ color: 'var(--wavelink-text-muted)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                         </svg>
                       </div>
-                      <p className="text-sm text-gray-400">No active apps detected</p>
-                      <p className="text-xs text-gray-500 mt-1">Start some applications to assign them to categories</p>
+                      <p className="text-sm" style={{ color: 'var(--wavelink-text-muted)' }}>All apps assigned</p>
                     </div>
                   )}
+                  
+                  {/* Remove Zone */}
+                  <div 
+                    className={`wavelink-remove-zone ${dragTarget === 'remove' ? 'drag-highlight' : ''}`}
+                    data-stream="remove"
+                    onDragOver={handleDragOver}
+                    onDragEnter={handleDragEnter}
+                    onDragLeave={handleDragLeave}
+                    onDrop={(e) => handleDrop(e, 'remove')}
+                  >
+                    <div className="wavelink-remove-icon">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1-1H9a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </div>
+                    <div className="wavelink-remove-text">
+                      Drop here to remove from mixers
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           </section>
+
         </main>
+
+        {/* Context Menu */}
+        {contextMenu && (
+          <div 
+            className="wavelink-context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <div 
+              className="wavelink-context-item danger"
+              onClick={() => deleteMixer(contextMenu.mixerId)}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              Delete Mixer
+            </div>
+          </div>
+        )}
       </div>
 
       {updateInfo?.available && (
@@ -919,80 +2140,7 @@ export default function App() {
         />
       )}
     </div>
-  )
-}
-
-function StreamCard({ stream, devices, route, volume, onRoute, onVolume }: {
-  stream: StreamId
-  devices: DeviceInfo[]
-  route: string | null
-  volume: number
-  onRoute: (stream: StreamId, deviceId: string | null) => void
-  onVolume: (stream: StreamId, volume: number) => void
-}) {
-  const streamNames = {
-    game: 'Gaming',
-    voice: 'Voice Chat', 
-    music: 'Music'
-  }
-
-  const streamIcons = {
-    game: '🎮',
-    voice: '🎤',
-    music: '🎵'
-  }
-
-  const streamColors = {
-    game: 'from-green-500 to-emerald-600',
-    voice: 'from-blue-500 to-cyan-600',
-    music: 'from-purple-500 to-pink-600'
-  }
-
-  return (
-    <div className="panel p-4">
-      <div className="flex items-center gap-3 mb-4">
-        <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${streamColors[stream]} flex items-center justify-center text-sm`}>
-          {streamIcons[stream]}
-        </div>
-        <div>
-          <h3 className="font-semibold text-gray-200">{streamNames[stream]}</h3>
-          <p className="text-xs text-gray-500">Audio Stream</p>
-        </div>
-      </div>
-
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">Output Device</label>
-          <select 
-            value={route || ''}
-            onChange={(e) => onRoute(stream, e.target.value || null)}
-            className="w-full bg-gray-800/80 border border-white/10 rounded-lg px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
-          >
-            <option value="">Default Device</option>
-            {devices.map(device => (
-              <option key={device.id} value={device.id}>
-                {device.name} {device.is_default ? '(Default)' : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">
-            Volume: {Math.round(volume * 100)}%
-          </label>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={volume}
-            onChange={(e) => onVolume(stream, parseFloat(e.target.value))}
-            className="slider w-full"
-          />
-        </div>
-      </div>
-    </div>
+    </>
   )
 }
 
